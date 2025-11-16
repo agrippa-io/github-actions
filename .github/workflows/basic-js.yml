@@ -18,4 +18,4 @@ jobs:
           node-version: '20' # Or your desired Node.js version
 
       - name: Run JavaScript script
-        run: node basic-js.js
+        run: node .github/workflows/basic-js.js
