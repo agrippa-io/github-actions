@@ -36,5 +36,8 @@ jobs:
   agentic-ai-dod:
     runs-on: ubuntu-latest
     steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4 # Use the checkout action to access the code
+
       - name: JavaScript REST
         run: node src/actions/action-rest.js
