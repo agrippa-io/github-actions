@@ -1,0 +1,37 @@
+name: CI on Push to PR
+run-name: Triggered by ${{ github.event_name }} event
+on:
+  # Triggers when code is pushed to any branch
+  push:
+  # Optional: You can filter branches if needed
+  # branches:
+  #   - main
+  #   - feature/**
+
+  # Triggers when a pull request is opened, synchronized (new push), or reopened
+  pull_request:
+    types: [opened, synchronize, reopened]
+    # Optional: You can filter branches the PR is targeting
+    # branches:
+    #   - main
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4 # Use the checkout action to access the code
+
+      - name: Run build and tests
+        run: |
+          echo "This job runs when a push or pull_request event occurs."
+          # Add your build and test commands here
+          # e.g., npm install
+          # e.g., npm test
+
+      - name: Conditional step example
+        if: github.event_name == 'push'
+        run: echo "This step only runs for a 'push' event."
+
+      - name: JavaScript REST
+        run: node src/actions/action-rest.js
