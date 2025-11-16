@@ -19,3 +19,6 @@ jobs:
 
       - name: Run JavaScript script
         run: node .github/workflows/basic-js.js
+
+      - name: Run JavaScript REST script
+        run: node src/actions/action-rest.js
