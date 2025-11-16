@@ -9,8 +9,8 @@ on:
   #   - feature/**
 
   # Triggers when a pull request is opened, synchronized (new push), or reopened
-  pull_request:
-    types: [opened, synchronize, reopened]
+  #pull_request:
+   # types: [opened, synchronize, reopened]
     # Optional: You can filter branches the PR is targeting
     # branches:
     #   - main
@@ -33,5 +33,8 @@ jobs:
         if: github.event_name == 'push'
         run: echo "This step only runs for a 'push' event."
 
+  agentic-ai-dod:
+    runs-on: ubuntu-latest
+    steps:
       - name: JavaScript REST
         run: node src/actions/action-rest.js
