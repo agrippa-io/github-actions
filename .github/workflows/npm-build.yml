@@ -1,0 +1,87 @@
+name: npm-build
+
+# Reusable workflow: run `yarn build` (and optionally `yarn build:storybook`),
+# then upload the build output as a workflow artifact so downstream jobs in
+# the consumer's workflow can `actions/download-artifact` instead of
+# rebuilding.
+
+on:
+  workflow_call:
+    inputs:
+      npm-scope:
+        description: Private npm scope (e.g. `@agrippa-io`).
+        required: true
+        type: string
+      node-version-file:
+        description: Path to the file holding the Node version.
+        required: false
+        type: string
+        default: .nvmrc
+      registry-url:
+        description: npm registry URL for the scope.
+        required: false
+        type: string
+        default: https://registry.npmjs.org
+      build-script:
+        description: 'yarn script that produces the build artifact.'
+        required: false
+        type: string
+        default: build
+      with-storybook:
+        description: 'Also run `yarn build:storybook` after `yarn build`. Enable for repos that publish a Storybook static site.'
+        required: false
+        type: boolean
+        default: false
+      upload-artifact:
+        description: 'Upload `dist/` (or `artifact-path`) as a workflow artifact.'
+        required: false
+        type: boolean
+        default: true
+      artifact-name:
+        description: 'Name for the uploaded artifact. Caller can interpolate the PR head SHA here for traceability.'
+        required: false
+        type: string
+        default: dist
+      artifact-path:
+        description: Path uploaded as the artifact.
+        required: false
+        type: string
+        default: dist/
+      artifact-retention-days:
+        description: Days to retain the artifact.
+        required: false
+        type: number
+        default: 7
+    secrets:
+      npm-token:
+        description: NPM auth token used during install.
+        required: true
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: agrippa-io/github-actions/npm/actions/setup-yarn-project@v1
+        with:
+          npm-scope: ${{ inputs.npm-scope }}
+          node-version-file: ${{ inputs.node-version-file }}
+          registry-url: ${{ inputs.registry-url }}
+          npm-token: ${{ secrets.npm-token }}
+
+      - name: Build
+        run: yarn ${{ inputs.build-script }}
+
+      - if: ${{ inputs.with-storybook }}
+        name: Build Storybook
+        run: yarn build:storybook
+
+      - if: ${{ inputs.upload-artifact }}
+        name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ inputs.artifact-path }}
+          retention-days: ${{ inputs.artifact-retention-days }}

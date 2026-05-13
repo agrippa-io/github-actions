@@ -1,0 +1,54 @@
+name: npm-lint
+
+# Reusable workflow: eslint with --max-warnings as a strict gate.
+# Default invocation matches the convention used across agrippa-io node repos
+# (lint the whole tree, .ts + .tsx, zero warnings).
+
+on:
+  workflow_call:
+    inputs:
+      npm-scope:
+        description: Private npm scope (e.g. `@agrippa-io`).
+        required: true
+        type: string
+      node-version-file:
+        description: Path to the file holding the Node version.
+        required: false
+        type: string
+        default: .nvmrc
+      registry-url:
+        description: npm registry URL for the scope.
+        required: false
+        type: string
+        default: https://registry.npmjs.org
+      lint-paths:
+        description: Paths/args passed to eslint after the binary name.
+        required: false
+        type: string
+        default: '. --ext .ts,.tsx'
+      max-warnings:
+        description: 'Forwarded to `eslint --max-warnings`. Set to -1 to disable the gate.'
+        required: false
+        type: number
+        default: 0
+    secrets:
+      npm-token:
+        description: NPM auth token used during install.
+        required: true
+
+jobs:
+  lint:
+    name: Lint (eslint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: agrippa-io/github-actions/npm/actions/setup-yarn-project@v1
+        with:
+          npm-scope: ${{ inputs.npm-scope }}
+          node-version-file: ${{ inputs.node-version-file }}
+          registry-url: ${{ inputs.registry-url }}
+          npm-token: ${{ secrets.npm-token }}
+
+      - name: eslint
+        run: yarn eslint ${{ inputs.lint-paths }} --max-warnings=${{ inputs.max-warnings }}

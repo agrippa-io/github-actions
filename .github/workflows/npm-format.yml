@@ -1,0 +1,49 @@
+name: npm-format
+
+# Reusable workflow: prettier --check on a set of TypeScript/JavaScript files.
+# One job, one purpose. Consumer wires it up in parallel with npm-lint and
+# npm-test so failures attribute to specific checks instead of one monolith.
+
+on:
+  workflow_call:
+    inputs:
+      npm-scope:
+        description: Private npm scope (e.g. `@agrippa-io`).
+        required: true
+        type: string
+      node-version-file:
+        description: Path to the file holding the Node version.
+        required: false
+        type: string
+        default: .nvmrc
+      registry-url:
+        description: npm registry URL for the scope.
+        required: false
+        type: string
+        default: https://registry.npmjs.org
+      source-glob:
+        description: Glob passed to `prettier --check`.
+        required: false
+        type: string
+        default: 'src/**/*.{ts,tsx}'
+    secrets:
+      npm-token:
+        description: NPM auth token used during install (needed even for format-only because peer deps may be private).
+        required: true
+
+jobs:
+  format:
+    name: Format check (prettier)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: agrippa-io/github-actions/npm/actions/setup-yarn-project@v1
+        with:
+          npm-scope: ${{ inputs.npm-scope }}
+          node-version-file: ${{ inputs.node-version-file }}
+          registry-url: ${{ inputs.registry-url }}
+          npm-token: ${{ secrets.npm-token }}
+
+      - name: prettier --check
+        run: yarn prettier --check '${{ inputs.source-glob }}'
