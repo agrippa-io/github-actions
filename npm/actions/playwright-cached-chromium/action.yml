@@ -1,0 +1,50 @@
+name: Install Playwright Chromium (cached)
+description: >
+  Cache and install Playwright's Chromium build. On a cache hit, only the
+  system dependencies are re-installed (cheap); on a miss the full browser is
+  downloaded with `--with-deps` (~90 MB). Cache key derives from a set of
+  caller-supplied files (defaults to `yarn.lock`) so a browser version bump in
+  lockfile invalidates the cache automatically.
+
+  Run this AFTER `setup-yarn-project` (or your own install) — `npx playwright`
+  needs the resolved node_modules.
+
+inputs:
+  cache-key-files:
+    description: >
+      Newline-separated list of files passed to `hashFiles(...)` to form the
+      cache key. Typically `yarn.lock` — bumping `@playwright/test` rewrites
+      it, which is exactly when you want the browser cache to invalidate.
+    required: false
+    default: yarn.lock
+  cache-path:
+    description: Directory where Playwright stores its browsers.
+    required: false
+    default: ~/.cache/ms-playwright
+
+outputs:
+  cache-hit:
+    description: '`true` when the Playwright browser cache was restored, `false` on a miss.'
+    value: ${{ steps.cache.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    - name: Restore Playwright browser cache
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ inputs.cache-path }}
+        key: playwright-chromium-${{ runner.os }}-${{ hashFiles(inputs.cache-key-files) }}
+
+    - name: Install Playwright Chromium
+      shell: bash
+      run: |
+        # On a cache hit the browser binary is already there — just refresh
+        # the apt-level system deps which aren't cached. On a miss, do the
+        # full download + deps install.
+        if [ "${{ steps.cache.outputs.cache-hit }}" = 'true' ]; then
+          npx playwright install-deps chromium
+        else
+          npx playwright install chromium --with-deps
+        fi

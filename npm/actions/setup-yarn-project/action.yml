@@ -1,0 +1,44 @@
+name: Setup yarn project
+description: >
+  Configure Node from .nvmrc, point yarn at a scoped private registry, and run
+  `yarn install --frozen-lockfile` with NODE_AUTH_TOKEN. Caller is responsible
+  for `actions/checkout@v4` because checkout options (ref, fetch-depth, token)
+  vary too much by job to bake in here.
+
+inputs:
+  node-version-file:
+    description: Path to the file holding the Node version (passed to actions/setup-node).
+    required: false
+    default: .nvmrc
+  npm-scope:
+    description: >
+      Private npm scope (e.g. `@agrippa-io` or `agrippa-io` — both forms are
+      accepted by setup-node). Becomes the `scope:` field on the setup-node step.
+    required: true
+  registry-url:
+    description: Registry the scope authenticates against for installs/publishes.
+    required: false
+    default: https://registry.npmjs.org
+  npm-token:
+    description: >
+      NPM auth token used as NODE_AUTH_TOKEN during `yarn install` (and visible
+      to subsequent steps in the same job through the cached `.npmrc` setup-node
+      writes). Pass a secret — never hardcode.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Node
+      uses: actions/setup-node@v4
+      with:
+        node-version-file: ${{ inputs.node-version-file }}
+        cache: yarn
+        registry-url: ${{ inputs.registry-url }}
+        scope: ${{ inputs.npm-scope }}
+
+    - name: yarn install --frozen-lockfile
+      shell: bash
+      env:
+        NODE_AUTH_TOKEN: ${{ inputs.npm-token }}
+      run: yarn install --frozen-lockfile

@@ -1,0 +1,56 @@
+name: Compute prerelease version
+description: >
+  Read the base version from `package.json`, append a caller-supplied suffix to
+  produce a prerelease (e.g. `0.1.0-canary.abc1234`, `0.1.0-dev.42.abc1234`,
+  `0.1.0-rc.17`), and write it back to `package.json` in the runner with
+  `npm version --no-git-tag-version --allow-same-version` so a subsequent
+  `npm publish` ships under the new identifier.
+
+  This action does not commit. It mutates `package.json` in the runner's
+  workspace only — callers should run `actions/checkout` first.
+
+inputs:
+  suffix:
+    description: >
+      Prerelease suffix appended to the base version with a literal `-`. For
+      example, pass `canary.${SHORT_SHA}` to get `<base>-canary.<sha>`. Caller
+      is responsible for computing the dynamic parts (sha, run number, PR
+      number) and substituting them into the suffix.
+    required: true
+  path:
+    description: Path to the package.json the action reads/writes.
+    required: false
+    default: package.json
+
+outputs:
+  base-version:
+    description: The base version as read from package.json before the suffix was applied.
+    value: ${{ steps.compute.outputs.base-version }}
+  version:
+    description: The full prerelease version that was written back to package.json.
+    value: ${{ steps.compute.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Compute and pin prerelease version
+      id: compute
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        FILE="${{ inputs.path }}"
+        SUFFIX="${{ inputs.suffix }}"
+
+        BASE=$(node -p "require('./${FILE}').version")
+        VERSION="${BASE}-${SUFFIX}"
+
+        # --no-git-tag-version: don't create a commit/tag — we're only
+        # mutating package.json in the runner for the subsequent publish.
+        # --allow-same-version: tolerate the (rare) case where package.json
+        # is already exactly at <BASE>-<SUFFIX>.
+        npm version "${VERSION}" --no-git-tag-version --allow-same-version >/dev/null
+
+        echo "base-version=${BASE}" >> "$GITHUB_OUTPUT"
+        echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+        echo "Pinned ${FILE} version: ${BASE} → ${VERSION}"
