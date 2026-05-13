@@ -1,0 +1,92 @@
+name: Bump package.json (verified commit via contents API)
+description: >
+  Update the `version` field of a `package.json` on a named branch by issuing
+  a `PUT /repos/:owner/:repo/contents/:path` against the GitHub contents API.
+  Commits made through the API are verified-signed by `github-actions[bot]`,
+  which works under "require signed commits" branch protection — unlike a
+  local `git commit && git push` from CI.
+
+  This action does not require an `actions/checkout` to have run first; it
+  reads the current file via the API.
+
+inputs:
+  branch:
+    description: Branch to commit the bumped package.json onto.
+    required: true
+  version:
+    description: New version string (e.g. `0.1.0`). Caller is responsible for semver validation.
+    required: true
+  path:
+    description: Path to the package.json within the repo.
+    required: false
+    default: package.json
+  repository:
+    description: 'Target repository in `owner/name` form. Defaults to the workflow''s repo.'
+    required: false
+    default: ${{ github.repository }}
+  commit-message:
+    description: >
+      Commit message. If left empty, defaults to
+      `chore(release): set version to <version>`.
+    required: false
+    default: ''
+  gh-token:
+    description: >
+      Token with `Contents: read and write` on the target repo. Typically
+      `secrets.RELEASE_TOKEN` (a PAT). The default `GITHUB_TOKEN` will work
+      only if the calling job declares `permissions: contents: write` AND the
+      target branch isn't protected against `GITHUB_TOKEN` pushes.
+    required: true
+
+outputs:
+  commit-sha:
+    description: SHA of the commit that updated package.json on the target branch.
+    value: ${{ steps.bump.outputs.commit-sha }}
+
+runs:
+  using: composite
+  steps:
+    - name: Bump package.json via contents API
+      id: bump
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.gh-token }}
+      run: |
+        set -euo pipefail
+
+        REPO="${{ inputs.repository }}"
+        BRANCH="${{ inputs.branch }}"
+        VERSION="${{ inputs.version }}"
+        FILE="${{ inputs.path }}"
+        MESSAGE="${{ inputs.commit-message }}"
+        if [ -z "$MESSAGE" ]; then
+          MESSAGE="chore(release): set version to ${VERSION}"
+        fi
+
+        # Fetch current file's blob SHA and contents from the branch. The
+        # contents API returns content base64-encoded.
+        EXISTING=$(gh api "repos/${REPO}/contents/${FILE}?ref=${BRANCH}")
+        SHA=$(echo "$EXISTING" | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).sha")
+        CURRENT=$(echo "$EXISTING" | node -p "Buffer.from(JSON.parse(require('fs').readFileSync(0, 'utf8')).content, 'base64').toString('utf8')")
+
+        # Produce the bumped JSON, preserving 2-space indent + trailing
+        # newline (npm/yarn convention).
+        BUMPED=$(printf '%s' "$CURRENT" | VERSION="${VERSION}" node -e "
+          const pkg = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+          pkg.version = process.env.VERSION;
+          process.stdout.write(JSON.stringify(pkg, null, 2) + '\n');
+        ")
+
+        # base64 -w 0 keeps the body on a single line — some API tooling
+        # tolerates wrapped base64, but unwrapped is universally accepted.
+        ENCODED=$(printf '%s' "$BUMPED" | base64 -w 0)
+
+        RESPONSE=$(gh api -X PUT "repos/${REPO}/contents/${FILE}" \
+          -f branch="${BRANCH}" \
+          -f message="${MESSAGE}" \
+          -f sha="${SHA}" \
+          -f content="${ENCODED}")
+
+        COMMIT_SHA=$(echo "$RESPONSE" | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).commit.sha")
+        echo "commit-sha=${COMMIT_SHA}" >> "$GITHUB_OUTPUT"
+        echo "Bumped ${FILE} on ${BRANCH} to ${VERSION} via commit ${COMMIT_SHA}"

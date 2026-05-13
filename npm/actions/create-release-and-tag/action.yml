@@ -1,0 +1,82 @@
+name: Create GitHub release and tag
+description: >
+  Wrap `octokit.rest.repos.createRelease` with sensible defaults. The release
+  also creates the tag at `target-commitish` (defaults to `github.sha`), so
+  there's no need for a separate `git push --tag`. This is the recommended
+  pattern for repos whose main branch has push protection — the tag is
+  created remotely via the REST API.
+
+  Requires the calling job to declare `permissions: contents: write` (the
+  GitHub token used implicitly by github-script needs that scope for both
+  release creation and tag creation).
+
+inputs:
+  tag:
+    description: 'Tag name to create (e.g. `v0.1.0`).'
+    required: true
+  name:
+    description: Human-readable release title. Defaults to the value of `tag`.
+    required: false
+    default: ''
+  target-commitish:
+    description: SHA (or branch name) the tag should point at. Defaults to the workflow's triggering SHA.
+    required: false
+    default: ${{ github.sha }}
+  body:
+    description: Release body. Ignored when `generate-release-notes: true`.
+    required: false
+    default: ''
+  generate-release-notes:
+    description: 'Whether to auto-generate release notes from commits/PRs since the previous tag.'
+    required: false
+    default: 'true'
+  prerelease:
+    description: Mark the release as a prerelease.
+    required: false
+    default: 'false'
+  draft:
+    description: Create the release as a draft.
+    required: false
+    default: 'false'
+
+outputs:
+  release-id:
+    description: Numeric ID of the created release.
+    value: ${{ steps.create.outputs.release-id }}
+  release-url:
+    description: HTML URL of the created release.
+    value: ${{ steps.create.outputs.release-url }}
+
+runs:
+  using: composite
+  steps:
+    - name: Create release
+      id: create
+      uses: actions/github-script@v7
+      env:
+        # Composite action inputs aren't visible to nested actions via
+        # core.getInput(); thread them through as env vars instead.
+        INPUT_TAG: ${{ inputs.tag }}
+        INPUT_NAME: ${{ inputs.name }}
+        INPUT_TARGET_COMMITISH: ${{ inputs.target-commitish }}
+        INPUT_BODY: ${{ inputs.body }}
+        INPUT_GENERATE_RELEASE_NOTES: ${{ inputs.generate-release-notes }}
+        INPUT_PRERELEASE: ${{ inputs.prerelease }}
+        INPUT_DRAFT: ${{ inputs.draft }}
+      with:
+        script: |
+          const tag = process.env.INPUT_TAG
+          const name = process.env.INPUT_NAME || tag
+          const result = await github.rest.repos.createRelease({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            tag_name: tag,
+            name,
+            target_commitish: process.env.INPUT_TARGET_COMMITISH,
+            body: process.env.INPUT_BODY,
+            generate_release_notes: process.env.INPUT_GENERATE_RELEASE_NOTES === 'true',
+            prerelease: process.env.INPUT_PRERELEASE === 'true',
+            draft: process.env.INPUT_DRAFT === 'true',
+          })
+          core.setOutput('release-id', result.data.id)
+          core.setOutput('release-url', result.data.html_url)
