@@ -1,0 +1,58 @@
+name: npm-test
+
+# Reusable workflow: run the project's test suite. Defaults to
+# `yarn vitest run --coverage` which matches the convention across
+# agrippa-io node repos. Opt into Playwright browser cache + install when the
+# project uses @storybook/addon-vitest or other browser-test runners.
+
+on:
+  workflow_call:
+    inputs:
+      npm-scope:
+        description: Private npm scope (e.g. `@agrippa-io`).
+        required: true
+        type: string
+      node-version-file:
+        description: Path to the file holding the Node version.
+        required: false
+        type: string
+        default: .nvmrc
+      registry-url:
+        description: npm registry URL for the scope.
+        required: false
+        type: string
+        default: https://registry.npmjs.org
+      with-playwright:
+        description: 'Install + cache Playwright Chromium before running tests. Enable for any project whose test suite mounts browser tests (Storybook addon-vitest, Playwright e2e, etc.).'
+        required: false
+        type: boolean
+        default: false
+      test-command:
+        description: 'Shell command (sans `yarn ` prefix) for the test invocation. Defaults to vitest with coverage.'
+        required: false
+        type: string
+        default: 'vitest run --coverage'
+    secrets:
+      npm-token:
+        description: NPM auth token used during install.
+        required: true
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: agrippa-io/github-actions/npm/actions/setup-yarn-project@v1
+        with:
+          npm-scope: ${{ inputs.npm-scope }}
+          node-version-file: ${{ inputs.node-version-file }}
+          registry-url: ${{ inputs.registry-url }}
+          npm-token: ${{ secrets.npm-token }}
+
+      - if: ${{ inputs.with-playwright }}
+        uses: agrippa-io/github-actions/npm/actions/playwright-cached-chromium@v1
+
+      - name: Test
+        run: yarn ${{ inputs.test-command }}

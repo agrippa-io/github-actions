@@ -1,17 +1,24 @@
-# `npm/actions/*` — composite actions for Node/npm projects
+# `npm/*` — composite actions and reusable workflows for Node/npm projects
 
-Composite actions that encapsulate the repetitive parts of an npm-publishing
-GitHub Actions workflow. They're the building blocks; reusable workflows
-(`*.yml` under [`../.github/workflows`](../.github/workflows)) will compose
-them into full pipelines.
+Two layers:
 
-| Action | Purpose |
-| ------ | ------- |
+- **Composite actions** under [`npm/actions/`](./actions) — small, single-purpose building blocks (`setup-yarn-project`, `bump-package-json`, etc.). Use these when you want fine-grained control inside an existing job.
+- **Reusable workflows** under [`../.github/workflows/`](../.github/workflows/) — opinionated single-job pipelines (`npm-format.yml`, `npm-lint.yml`, etc.) that compose the actions above. Use these when you want a ready-made job; consumers wire them up in their `ci.yml` with `uses:` to fan them out in parallel.
+
+| Composite action | Purpose |
+| ---------------- | ------- |
 | [`setup-yarn-project`](#setup-yarn-project) | `setup-node` + scoped npm registry + `yarn install --frozen-lockfile` |
 | [`bump-package-json`](#bump-package-json) | Verified-signed commit that updates `package.json#version` on a branch, via the contents API |
 | [`compute-prerelease-version`](#compute-prerelease-version) | Append a suffix to the base version and pin `package.json` in-runner |
 | [`playwright-cached-chromium`](#playwright-cached-chromium) | Cache + install Playwright Chromium for browser-based tests |
 | [`create-release-and-tag`](#create-release-and-tag) | `repos.createRelease` wrapper that pins the tag to a specific commit |
+
+| Reusable workflow | Purpose |
+| ----------------- | ------- |
+| [`npm-format.yml`](#npm-formatyml) | `prettier --check` against a configurable source glob |
+| [`npm-lint.yml`](#npm-lintyml) | `eslint` with a configurable `--max-warnings` gate |
+| [`npm-test.yml`](#npm-testyml) | Run the test suite (default `vitest run --coverage`); optional Playwright Chromium |
+| [`npm-build.yml`](#npm-buildyml) | `yarn build` (optional Storybook) + upload `dist/` as an artifact |
 
 ## Pinning
 
@@ -187,3 +194,198 @@ steps:
 The calling job **must** declare `permissions: contents: write` — the GitHub
 token used implicitly by `actions/github-script` needs it for both the
 release and tag creation.
+
+---
+
+# Reusable workflows
+
+Each reusable workflow runs as its **own job** in the consumer's `ci.yml`,
+which is the whole point of this layer: format / lint / test can fan out
+in parallel rather than being sequential steps inside one validate job.
+
+Each one declares its inputs and the `npm-token` secret explicitly. To pass
+the secret, the cleanest pattern is per-job:
+
+```yaml
+secrets:
+  npm-token: ${{ secrets.NPM_TOKEN }}
+```
+
+`secrets: inherit` also works if the consumer trusts all the reusable
+workflows it calls with all of its secrets.
+
+---
+
+## `npm-format.yml`
+
+`prettier --check` against a configurable source glob.
+
+| Input | Required | Default | Description |
+| ----- | -------- | ------- | ----------- |
+| `npm-scope` | **yes** | — | npm scope |
+| `node-version-file` | no | `.nvmrc` | Forwarded to `setup-yarn-project` |
+| `registry-url` | no | `https://registry.npmjs.org` | npm registry |
+| `source-glob` | no | `src/**/*.{ts,tsx}` | Passed to `prettier --check` |
+
+| Secret | Required | Description |
+| ------ | -------- | ----------- |
+| `npm-token` | **yes** | NPM auth token (transitive deps may be private) |
+
+```yaml
+format:
+  uses: agrippa-io/github-actions/.github/workflows/npm-format.yml@v1
+  with:
+    npm-scope: '@agrippa-io'
+  secrets:
+    npm-token: ${{ secrets.NPM_TOKEN }}
+```
+
+---
+
+## `npm-lint.yml`
+
+`eslint` with `--max-warnings` as a strict gate. Default invocation
+(`eslint . --ext .ts,.tsx --max-warnings=0`) matches the convention across
+agrippa-io node repos.
+
+| Input | Required | Default | Description |
+| ----- | -------- | ------- | ----------- |
+| `npm-scope` | **yes** | — | npm scope |
+| `node-version-file` | no | `.nvmrc` | Forwarded to `setup-yarn-project` |
+| `registry-url` | no | `https://registry.npmjs.org` | npm registry |
+| `lint-paths` | no | `. --ext .ts,.tsx` | Args after the eslint binary |
+| `max-warnings` | no | `0` | Forwarded to `eslint --max-warnings`; `-1` disables the gate |
+
+| Secret | Required | Description |
+| ------ | -------- | ----------- |
+| `npm-token` | **yes** | NPM auth token |
+
+```yaml
+lint:
+  uses: agrippa-io/github-actions/.github/workflows/npm-lint.yml@v1
+  with:
+    npm-scope: '@agrippa-io'
+  secrets:
+    npm-token: ${{ secrets.NPM_TOKEN }}
+```
+
+---
+
+## `npm-test.yml`
+
+Run the test suite. Defaults to `vitest run --coverage`. Toggle
+`with-playwright: true` for any project whose suite mounts browser tests
+(Storybook addon-vitest, Playwright e2e, etc.) — that enables the
+[`playwright-cached-chromium`](#playwright-cached-chromium) install before
+the tests run.
+
+| Input | Required | Default | Description |
+| ----- | -------- | ------- | ----------- |
+| `npm-scope` | **yes** | — | npm scope |
+| `node-version-file` | no | `.nvmrc` | Forwarded to `setup-yarn-project` |
+| `registry-url` | no | `https://registry.npmjs.org` | npm registry |
+| `with-playwright` | no | `false` | Cache + install Playwright Chromium before tests |
+| `test-command` | no | `vitest run --coverage` | Test invocation (after `yarn`) |
+
+| Secret | Required | Description |
+| ------ | -------- | ----------- |
+| `npm-token` | **yes** | NPM auth token |
+
+```yaml
+test:
+  uses: agrippa-io/github-actions/.github/workflows/npm-test.yml@v1
+  with:
+    npm-scope: '@agrippa-io'
+    with-playwright: true
+  secrets:
+    npm-token: ${{ secrets.NPM_TOKEN }}
+```
+
+---
+
+## `npm-build.yml`
+
+`yarn build` (and optionally `yarn build:storybook`), with the build
+output uploaded as a workflow artifact so downstream jobs can consume it
+via `actions/download-artifact` instead of rebuilding.
+
+| Input | Required | Default | Description |
+| ----- | -------- | ------- | ----------- |
+| `npm-scope` | **yes** | — | npm scope |
+| `node-version-file` | no | `.nvmrc` | Forwarded to `setup-yarn-project` |
+| `registry-url` | no | `https://registry.npmjs.org` | npm registry |
+| `build-script` | no | `build` | yarn script that produces the artifact |
+| `with-storybook` | no | `false` | Also run `yarn build:storybook` |
+| `upload-artifact` | no | `true` | Upload `artifact-path` as a workflow artifact |
+| `artifact-name` | no | `dist` | Artifact name (consumer can interpolate `${{ github.event.pull_request.head.sha }}` for traceability) |
+| `artifact-path` | no | `dist/` | Path uploaded |
+| `artifact-retention-days` | no | `7` | Days to retain the artifact |
+
+| Secret | Required | Description |
+| ------ | -------- | ----------- |
+| `npm-token` | **yes** | NPM auth token |
+
+```yaml
+build:
+  needs: [format, lint, test]
+  uses: agrippa-io/github-actions/.github/workflows/npm-build.yml@v1
+  with:
+    npm-scope: '@agrippa-io'
+    with-storybook: true
+    artifact-name: dist-${{ github.event.pull_request.head.sha }}
+  secrets:
+    npm-token: ${{ secrets.NPM_TOKEN }}
+```
+
+---
+
+## Full consumer example
+
+A typical `ci.yml` for an npm package in this workspace:
+
+```yaml
+name: ci
+on:
+  pull_request:
+    branches: [develop, 'release/**', main]
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  format:
+    uses: agrippa-io/github-actions/.github/workflows/npm-format.yml@v1
+    with: { npm-scope: '@agrippa-io' }
+    secrets: { npm-token: '${{ secrets.NPM_TOKEN }}' }
+
+  lint:
+    uses: agrippa-io/github-actions/.github/workflows/npm-lint.yml@v1
+    with: { npm-scope: '@agrippa-io' }
+    secrets: { npm-token: '${{ secrets.NPM_TOKEN }}' }
+
+  test:
+    uses: agrippa-io/github-actions/.github/workflows/npm-test.yml@v1
+    with: { npm-scope: '@agrippa-io', with-playwright: true }
+    secrets: { npm-token: '${{ secrets.NPM_TOKEN }}' }
+
+  build:
+    needs: [format, lint, test]
+    uses: agrippa-io/github-actions/.github/workflows/npm-build.yml@v1
+    with:
+      npm-scope: '@agrippa-io'
+      with-storybook: true
+      artifact-name: dist-${{ github.event.pull_request.head.sha }}
+    secrets: { npm-token: '${{ secrets.NPM_TOKEN }}' }
+
+  publish-canary:
+    needs: build
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    permissions: { contents: read, pull-requests: write }
+    steps:
+      # ... (canary publish stays in the consumer because the PR-comment
+      # body and install snippet are package-specific)
+```
+
+`format` / `lint` / `test` run in parallel; `build` gates on all three;
+`publish-canary` gates on `build`.
