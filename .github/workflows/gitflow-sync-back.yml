@@ -1,0 +1,123 @@
+name: gitflow-sync-back
+
+# Reusable workflow: after a release lands on the release line (default
+# `main`), open a back-merge PR to the integration line (default `develop`)
+# so the version bump and any stabilization fixes flow downstream.
+#
+# Generic gitflow concern — not npm-specific. The `from`/`to` defaults
+# match the gitflow convention but can be overridden.
+
+on:
+  workflow_call:
+    inputs:
+      from:
+        description: Source branch (just merged production release).
+        required: false
+        type: string
+        default: main
+      to:
+        description: Target integration branch.
+        required: false
+        type: string
+        default: develop
+      version:
+        description: 'Version that was just released (used in branch name + PR title for audit traceability). When omitted, the action reads it from `package.json` on `from`.'
+        required: false
+        type: string
+        default: ''
+      branch-prefix:
+        description: Prefix for the sync branch.
+        required: false
+        type: string
+        default: sync
+    secrets:
+      release-token:
+        description: 'PAT with `Contents: read and write`. Pushes from this token trigger downstream workflows on the sync branch.'
+        required: true
+
+jobs:
+  sync:
+    name: 'Open back-merge PR ${{ inputs.from }} → ${{ inputs.to }}'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.release-token }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - id: diff
+        name: 'Count commits ${{ inputs.from }} is ahead of ${{ inputs.to }}'
+        run: |
+          git fetch origin "${{ inputs.to }}:${{ inputs.to }}"
+          AHEAD=$(git rev-list --count "${{ inputs.to }}..${{ inputs.from }}")
+          echo "${{ inputs.from }} is $AHEAD commits ahead of ${{ inputs.to }}"
+          echo "ahead=$AHEAD" >> "$GITHUB_OUTPUT"
+
+      - id: branch
+        if: steps.diff.outputs.ahead != '0'
+        name: Create sync branch
+        run: |
+          # Determine the version label embedded in the sync branch name.
+          # Prefer the explicit input; fall back to package.json on the
+          # source branch HEAD.
+          INPUT_VERSION="${{ inputs.version }}"
+          if [ -n "$INPUT_VERSION" ]; then
+            VERSION="$INPUT_VERSION"
+          else
+            VERSION=$(node -p "require('./package.json').version" 2>/dev/null || echo "unknown")
+          fi
+          BRANCH="${{ inputs.branch-prefix }}/${{ inputs.from }}-to-${{ inputs.to }}-${VERSION}"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          # Skip silently if a sync branch for this version already exists
+          # on origin — an earlier run has the PR in flight.
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            echo "Branch $BRANCH already exists on origin — sync PR is in flight."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git checkout -b "$BRANCH"
+          git push -u origin "$BRANCH"
+
+      - name: Open back-merge PR
+        if: steps.diff.outputs.ahead != '0' && steps.branch.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BRANCH="${{ steps.branch.outputs.branch }}"
+          VERSION="${{ steps.branch.outputs.version }}"
+          FROM="${{ inputs.from }}"
+          TO="${{ inputs.to }}"
+          BODY=$(cat <<EOF
+          Automatic back-merge of \`$FROM\` into \`$TO\` after publishing
+          **v${VERSION}**.
+
+          Per gitflow, every commit on \`$FROM\` must flow back to \`$TO\`
+          so the version bump and any release fixes reach the integration
+          branch.
+
+          ## Merging
+
+          Review the diff, resolve any conflicts on \`$BRANCH\`, then merge.
+          EOF
+          )
+
+          gh pr create \
+            --base "$TO" \
+            --head "$BRANCH" \
+            --title "chore(sync): back-merge ${FROM} → ${TO} (v${VERSION})" \
+            --body "$BODY"
+
+      - name: No-op summary
+        if: steps.diff.outputs.ahead == '0'
+        run: echo "${{ inputs.from }} and ${{ inputs.to }} are in sync; nothing to back-merge."

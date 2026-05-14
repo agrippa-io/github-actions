@@ -1,0 +1,96 @@
+name: npm-publish-latest
+
+# Reusable workflow: publish the production release of an npm package.
+#
+# Read the version directly from `package.json` (the bump was made on the
+# release branch by npm-release-stage.yml — or by the operator on a hotfix
+# branch — and arrived on the target branch via the squash-merge of the
+# release PR). No `npm version`, no parsing the merge subject, no
+# pushing back to the target branch.
+#
+# Creates a `vX.Y.Z` git tag remotely via repos.createRelease pinned to the
+# triggering commit, so the caller doesn't need `git push --tag` access to
+# a protected branch.
+
+on:
+  workflow_call:
+    inputs:
+      npm-scope:
+        description: Private npm scope (e.g. `@agrippa-io`).
+        required: true
+        type: string
+      node-version-file:
+        description: Path to the file holding the Node version.
+        required: false
+        type: string
+        default: .nvmrc
+      registry-url:
+        description: npm registry URL for the scope.
+        required: false
+        type: string
+        default: https://registry.npmjs.org
+      access:
+        description: 'Passed to `npm publish --access`.'
+        required: false
+        type: string
+        default: restricted
+      generate-release-notes:
+        description: Have the GitHub Release API auto-generate notes from PRs since the previous tag.
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      npm-token:
+        description: NPM auth token used for install + publish.
+        required: true
+    outputs:
+      version:
+        description: Version that was published (read from package.json).
+        value: ${{ jobs.publish.outputs.version }}
+      tag:
+        description: Git tag created at the triggering commit (e.g. `v0.1.0`).
+        value: ${{ jobs.publish.outputs.tag }}
+      release-url:
+        description: HTML URL of the GitHub Release.
+        value: ${{ jobs.publish.outputs.release-url }}
+
+jobs:
+  publish:
+    name: Publish latest to npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write    # required by create-release-and-tag
+      id-token: write    # reserved for npm OIDC / consumer AWS OIDC chained from this workflow
+    outputs:
+      version: ${{ steps.read-version.outputs.version }}
+      tag: ${{ steps.read-version.outputs.tag }}
+      release-url: ${{ steps.release.outputs.release-url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: agrippa-io/github-actions/npm/actions/setup-yarn-project@v1
+        with:
+          npm-scope: ${{ inputs.npm-scope }}
+          node-version-file: ${{ inputs.node-version-file }}
+          registry-url: ${{ inputs.registry-url }}
+          npm-token: ${{ secrets.npm-token }}
+
+      - id: read-version
+        name: Read version from package.json
+        shell: bash
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Publishing version: ${VERSION}"
+
+      - name: 'Publish to npm (dist-tag: latest)'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.npm-token }}
+        run: npm publish --tag latest --access ${{ inputs.access }}
+
+      - id: release
+        uses: agrippa-io/github-actions/npm/actions/create-release-and-tag@v1
+        with:
+          tag: ${{ steps.read-version.outputs.tag }}
+          generate-release-notes: ${{ inputs.generate-release-notes }}
