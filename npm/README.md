@@ -19,6 +19,14 @@ Two layers:
 | [`npm-lint.yml`](#npm-lintyml) | `eslint` with a configurable `--max-warnings` gate |
 | [`npm-test.yml`](#npm-testyml) | Run the test suite (default `vitest run --coverage`); optional Playwright Chromium |
 | [`npm-build.yml`](#npm-buildyml) | `yarn build` (optional Storybook) + upload `dist/` as an artifact |
+| [`npm-publish-prerelease.yml`](#npm-publish-prereleaseyml) | Publish a prerelease build (canary / dev / staging) under a configurable dist-tag |
+| [`npm-publish-latest.yml`](#npm-publish-latestyml) | Publish the production release; reads version from `package.json` and creates the `vX.Y.Z` tag remotely |
+| [`npm-release-stage.yml`](#npm-release-stageyml) | Cut `release/X.Y.Z`, bump `package.json` via contents API, open draft promotion PR |
+| [`gitflow-sync-back.yml`](#gitflow-sync-backyml) | After a release lands on `main`, open a back-merge PR `main → develop` |
+
+> Note: `gitflow-sync-back.yml` is not strictly npm-specific (it's a pure
+> gitflow concern) but lives under the same `.github/workflows/` directory
+> for convenience.
 
 ## Pinning
 
@@ -389,3 +397,212 @@ jobs:
 
 `format` / `lint` / `test` run in parallel; `build` gates on all three;
 `publish-canary` gates on `build`.
+
+---
+
+## `npm-publish-prerelease.yml`
+
+Publish a prerelease build to npm under a configurable dist-tag. One
+workflow covers all three prerelease patterns:
+
+| Pattern | dist-tag | suffix template | Where this fires |
+| ------- | -------- | --------------- | ---------------- |
+| canary  | `canary` | `canary.<short-sha>` | PR validation (`ci.yml`) |
+| dev     | `dev`    | `dev.<pr-number>.<short-sha>` | push to `develop` |
+| staging | `staging` | `rc.<run-number>` | push to `release/**` |
+
+The suffix is caller-supplied — the workflow doesn't look up PR numbers or
+SHAs itself, because the lookup logic differs per pattern (dev needs the
+PR number for the commit; staging just uses `github.run_number`). Callers
+that need a PR-number suffix add a small pre-job that runs
+`repos.listPullRequestsAssociatedWithCommit` and threads the result into
+`version-suffix`.
+
+| Input | Required | Default | Description |
+| ----- | -------- | ------- | ----------- |
+| `npm-scope` | **yes** | — | npm scope |
+| `node-version-file` | no | `.nvmrc` | Forwarded to `setup-yarn-project` |
+| `registry-url` | no | `https://registry.npmjs.org` | npm registry |
+| `dist-tag` | **yes** | — | `canary`, `dev`, `staging`, or any other tag |
+| `version-suffix` | **yes** | — | Appended after `-` to the base version |
+| `access` | no | `restricted` | Passed to `npm publish --access` |
+| `ref` | no | (workflow trigger ref) | Optional explicit ref to check out (e.g. the PR head SHA for canary) |
+
+| Secret | Required | Description |
+| ------ | -------- | ----------- |
+| `npm-token` | **yes** | NPM auth token |
+
+| Output | Description |
+| ------ | ----------- |
+| `version` | Full prerelease version that was published |
+
+```yaml
+# Staging example — the easy case, no PR lookup needed.
+publish-staging:
+  if: startsWith(github.ref, 'refs/heads/release/')
+  needs: build
+  uses: agrippa-io/github-actions/.github/workflows/npm-publish-prerelease.yml@v1
+  with:
+    npm-scope: '@agrippa-io'
+    dist-tag: staging
+    version-suffix: rc.${{ github.run_number }}
+  secrets:
+    npm-token: ${{ secrets.NPM_TOKEN }}
+```
+
+```yaml
+# Dev example — caller looks up the PR number first.
+compute-dev-suffix:
+  if: github.ref == 'refs/heads/develop'
+  runs-on: ubuntu-latest
+  outputs:
+    suffix: ${{ steps.s.outputs.suffix }}
+  steps:
+    - uses: actions/github-script@v7
+      id: s
+      with:
+        script: |
+          const { data } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            commit_sha: context.sha,
+          })
+          const pr = data[0]?.number ?? 0
+          const sha = (data[0]?.merge_commit_sha ?? context.sha).slice(0, 7)
+          core.setOutput('suffix', `dev.${pr}.${sha}`)
+
+publish-dev:
+  needs: [build, compute-dev-suffix]
+  uses: agrippa-io/github-actions/.github/workflows/npm-publish-prerelease.yml@v1
+  with:
+    npm-scope: '@agrippa-io'
+    dist-tag: dev
+    version-suffix: ${{ needs.compute-dev-suffix.outputs.suffix }}
+  secrets:
+    npm-token: ${{ secrets.NPM_TOKEN }}
+```
+
+---
+
+## `npm-publish-latest.yml`
+
+Production publish. Reads version from `package.json` (the bump arrived
+via the squash-merge of the release PR — see
+[`npm-release-stage.yml`](#npm-release-stageyml)). Publishes with dist-tag
+`latest`, then creates a `vX.Y.Z` git tag remotely via
+`repos.createRelease` pinned to the triggering commit. No `git push --tag`
+to the protected branch.
+
+| Input | Required | Default | Description |
+| ----- | -------- | ------- | ----------- |
+| `npm-scope` | **yes** | — | npm scope |
+| `node-version-file` | no | `.nvmrc` | Forwarded to `setup-yarn-project` |
+| `registry-url` | no | `https://registry.npmjs.org` | npm registry |
+| `access` | no | `restricted` | Passed to `npm publish --access` |
+| `generate-release-notes` | no | `true` | Auto-generate notes from PRs since previous tag |
+
+| Secret | Required | Description |
+| ------ | -------- | ----------- |
+| `npm-token` | **yes** | NPM auth token |
+
+| Output | Description |
+| ------ | ----------- |
+| `version` | Version that was published |
+| `tag` | Git tag created (e.g. `v0.1.0`) |
+| `release-url` | HTML URL of the GitHub Release |
+
+```yaml
+publish-prod:
+  if: github.ref == 'refs/heads/main'
+  needs: build
+  uses: agrippa-io/github-actions/.github/workflows/npm-publish-latest.yml@v1
+  with:
+    npm-scope: '@agrippa-io'
+  secrets:
+    npm-token: ${{ secrets.NPM_TOKEN }}
+```
+
+The workflow internally declares `permissions: contents: write` + `id-token: write` on its own job, so the caller does not need to set those.
+
+---
+
+## `npm-release-stage.yml`
+
+Operator-triggered release branch cut. Validates the semver input, cuts
+`release/X.Y.Z` from the source branch, bumps `package.json#version` via
+the GitHub contents API (verified-signed commit by `github-actions[bot]`,
+works under "require signed commits" branch protection), and opens a
+draft promotion PR.
+
+Designed for `workflow_dispatch`-style invocation from the consumer (the
+operator types the version into the consumer's `release-stage.yml`, which
+in turn calls this).
+
+| Input | Required | Default | Description |
+| ----- | -------- | ------- | ----------- |
+| `version` | **yes** | — | Strict semver `x.y.z` (prerelease suffixes rejected) |
+| `source-branch` | no | `develop` | Branch the release is cut from |
+| `target-branch` | no | `main` | Branch the release PR will target |
+| `draft` | no | `true` | Open the promotion PR as a draft |
+| `pr-title` | no | `chore(release): <version>` | Override the title |
+| `pr-body` | no | (sensible default) | Override the body; supports `{version}`, `{branch}`, `{source}`, `{target}` substitutions |
+
+| Secret | Required | Description |
+| ------ | -------- | ----------- |
+| `release-token` | **yes** | PAT with `Contents: read and write` — pushes from this token trigger downstream workflows on the release branch |
+
+| Output | Description |
+| ------ | ----------- |
+| `branch` | Name of the release branch that was cut |
+| `pr-number` | Number of the promotion PR |
+
+```yaml
+on:
+  workflow_dispatch:
+    inputs:
+      version: { type: string, required: true }
+
+jobs:
+  cut-release-branch:
+    uses: agrippa-io/github-actions/.github/workflows/npm-release-stage.yml@v1
+    with:
+      version: ${{ inputs.version }}
+    secrets:
+      release-token: ${{ secrets.RELEASE_TOKEN }}
+```
+
+---
+
+## `gitflow-sync-back.yml`
+
+After a release lands on the release line (default `main`), open a
+back-merge PR to the integration line (default `develop`) so the version
+bump and any stabilization fixes flow downstream. Generic gitflow
+concern — not npm-specific.
+
+If the source is already in sync (0 commits ahead), the workflow is a
+no-op and prints a summary. If a sync branch for the version already
+exists on origin (an earlier run still has the PR in flight), the
+workflow skips creation rather than opening a duplicate.
+
+| Input | Required | Default | Description |
+| ----- | -------- | ------- | ----------- |
+| `from` | no | `main` | Source branch (just-merged production) |
+| `to` | no | `develop` | Target integration branch |
+| `version` | no | `package.json#version` on `from` | Label embedded in the sync branch + PR title |
+| `branch-prefix` | no | `sync` | Prefix for the sync branch |
+
+| Secret | Required | Description |
+| ------ | -------- | ----------- |
+| `release-token` | **yes** | PAT with `Contents: read and write` |
+
+```yaml
+sync-develop:
+  if: github.ref == 'refs/heads/main'
+  needs: publish-prod
+  uses: agrippa-io/github-actions/.github/workflows/gitflow-sync-back.yml@v1
+  with:
+    version: ${{ needs.publish-prod.outputs.version }}
+  secrets:
+    release-token: ${{ secrets.RELEASE_TOKEN }}
+```

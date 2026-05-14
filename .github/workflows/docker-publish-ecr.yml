@@ -1,0 +1,120 @@
+name: docker-publish-ecr
+
+# Reusable workflow: build a Docker image and push it to AWS ECR.
+#
+# Pattern:
+#   1. Configure AWS credentials via GitHub OIDC (no long-lived AWS keys).
+#   2. Log in to ECR.
+#   3. Build + push with BuildKit (GHA layer cache, optional BuildKit secret
+#      mount for credentials that must be available at build time but never
+#      land in any image layer).
+#   4. Tag the resulting image twice — an immutable `vX.Y.Z` and a floating
+#      `latest` — for the npm-publish-latest convention.
+#
+# Caller declares `id-token: write` so OIDC can mint the AWS session token
+# at runtime. The AWS role's trust policy must trust GitHub's OIDC provider
+# scoped to the calling repo (and typically a specific ref) — see the
+# consumer's RELEASE.md for the exact trust policy shape.
+
+on:
+  workflow_call:
+    inputs:
+      registry-url:
+        description: 'Full ECR repository URL (e.g. `<account>.dkr.ecr.<region>.amazonaws.com/<repo>`).'
+        required: true
+        type: string
+      aws-region:
+        description: AWS region where the ECR repository lives.
+        required: true
+        type: string
+      tag:
+        description: 'Immutable image tag (e.g. `v0.1.0`).'
+        required: true
+        type: string
+      also-latest:
+        description: Also push a floating `latest` tag pointing at the same image.
+        required: false
+        type: boolean
+        default: true
+      context:
+        description: Docker build context path.
+        required: false
+        type: string
+        default: '.'
+      dockerfile:
+        description: Path to the Dockerfile relative to context.
+        required: false
+        type: string
+        default: Dockerfile
+      buildkit-secret-name:
+        description: 'Name used to expose the npm-token to BuildKit (referenced inside the Dockerfile via `--mount=type=secret,id=<name>`). Set to empty to disable the secret mount.'
+        required: false
+        type: string
+        default: npm_token
+    secrets:
+      aws-role-arn:
+        description: ARN of the IAM role to assume via OIDC for ECR push.
+        required: true
+      buildkit-secret-value:
+        description: 'Value mounted into the build as a BuildKit secret (typically `secrets.NPM_TOKEN`). Required if `buildkit-secret-name` is non-empty.'
+        required: false
+
+jobs:
+  push:
+    name: 'Push ${{ inputs.tag }} to ECR'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write    # required for AWS OIDC
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.aws-role-arn }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Log in to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Compose image tags
+        id: tags
+        shell: bash
+        run: |
+          TAGS="${{ inputs.registry-url }}:${{ inputs.tag }}"
+          if [ "${{ inputs.also-latest }}" = "true" ]; then
+            TAGS="${TAGS}"$'\n'"${{ inputs.registry-url }}:latest"
+          fi
+          {
+            echo 'tags<<EOF'
+            echo "$TAGS"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push (with BuildKit secret mount)
+        if: ${{ inputs.buildkit-secret-name != '' }}
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.context }}/${{ inputs.dockerfile }}
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          secrets: |
+            ${{ inputs.buildkit-secret-name }}=${{ secrets.buildkit-secret-value }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push (no secret mount)
+        if: ${{ inputs.buildkit-secret-name == '' }}
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.context }}/${{ inputs.dockerfile }}
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

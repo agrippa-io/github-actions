@@ -1,0 +1,86 @@
+name: npm-publish-prerelease
+
+# Reusable workflow: publish a prerelease build to npm under a configurable
+# dist-tag.
+#
+# Designed for the canary / dev / staging publish patterns:
+#   canary  → dist-tag canary,  suffix `canary.<short-sha>`           (on PR)
+#   dev     → dist-tag dev,     suffix `dev.<pr-number>.<short-sha>`  (on develop push)
+#   staging → dist-tag staging, suffix `rc.<run-number>`              (on release/* push)
+#
+# The version suffix is caller-supplied so this single workflow handles all
+# three patterns. For dev publishes, the caller is responsible for looking
+# up the PR number / merge SHA in a small pre-job and threading the result
+# into `version-suffix`.
+
+on:
+  workflow_call:
+    inputs:
+      npm-scope:
+        description: Private npm scope (e.g. `@agrippa-io`).
+        required: true
+        type: string
+      node-version-file:
+        description: Path to the file holding the Node version.
+        required: false
+        type: string
+        default: .nvmrc
+      registry-url:
+        description: npm registry URL for the scope.
+        required: false
+        type: string
+        default: https://registry.npmjs.org
+      dist-tag:
+        description: 'npm dist-tag (e.g. `canary`, `dev`, `staging`).'
+        required: true
+        type: string
+      version-suffix:
+        description: 'Suffix appended after `-` to the base version. Example: `canary.abc1234`, `dev.42.abc1234`, `rc.17`.'
+        required: true
+        type: string
+      access:
+        description: 'Passed to `npm publish --access`. Use `restricted` for private scope, `public` for public.'
+        required: false
+        type: string
+        default: restricted
+      ref:
+        description: 'Optional explicit ref to check out (e.g. the PR head SHA for canary publishes). Defaults to the workflow''s triggering ref.'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      npm-token:
+        description: NPM auth token used for install + publish.
+        required: true
+    outputs:
+      version:
+        description: Full prerelease version that was published.
+        value: ${{ jobs.publish.outputs.version }}
+
+jobs:
+  publish:
+    name: Publish ${{ inputs.dist-tag }} to npm
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: agrippa-io/github-actions/npm/actions/setup-yarn-project@v1
+        with:
+          npm-scope: ${{ inputs.npm-scope }}
+          node-version-file: ${{ inputs.node-version-file }}
+          registry-url: ${{ inputs.registry-url }}
+          npm-token: ${{ secrets.npm-token }}
+
+      - id: version
+        uses: agrippa-io/github-actions/npm/actions/compute-prerelease-version@v1
+        with:
+          suffix: ${{ inputs.version-suffix }}
+
+      - name: 'Publish to npm (dist-tag: ${{ inputs.dist-tag }})'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.npm-token }}
+        run: npm publish --tag ${{ inputs.dist-tag }} --access ${{ inputs.access }}

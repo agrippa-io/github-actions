@@ -1,0 +1,160 @@
+name: npm-release-stage
+
+# Reusable workflow: operator-triggered branch cut for a release.
+#
+# 1. Validate the version input as strict semver `x.y.z`.
+# 2. Cut `release/<version>` from `<source-branch>` (default: `develop`).
+# 3. Bump `package.json#version` on the new branch via the GitHub contents
+#    API (verified-signed commit by `github-actions[bot]`, works under
+#    "require signed commits" branch protection).
+# 4. Open a draft promotion PR `release/<version>` → `<target-branch>`
+#    (default: `main`).
+#
+# After this workflow runs, every subsequent push to `release/<version>`
+# (stabilization fixes from operators' local machines) triggers a fresh
+# staging RC via the consumer's `npm-publish-prerelease` job; when the
+# draft PR is squash-merged, the bump arrives on the target branch and
+# `npm-publish-latest` reads the version directly from `package.json`.
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'Strict semver `x.y.z`. Pre-release suffixes are rejected — those names are reserved for the prerelease dist-tag versions that npm-publish-prerelease mints automatically.'
+        required: true
+        type: string
+      source-branch:
+        description: Branch the release is cut from.
+        required: false
+        type: string
+        default: develop
+      target-branch:
+        description: Branch the release PR will target.
+        required: false
+        type: string
+        default: main
+      draft:
+        description: Open the promotion PR as a draft (so QA can validate the staging RC before promotion).
+        required: false
+        type: boolean
+        default: true
+      pr-title:
+        description: Override the default PR title `chore(release): <version>`.
+        required: false
+        type: string
+        default: ''
+      pr-body:
+        description: 'Override the default PR body. Available substitutions inside the input string: `{version}`, `{branch}`, `{source}`, `{target}`.'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      release-token:
+        description: 'PAT with `Contents: read and write`. Pushes from this token trigger downstream workflows on the release branch (unlike GITHUB_TOKEN).'
+        required: true
+    outputs:
+      branch:
+        description: Name of the release branch that was cut.
+        value: ${{ jobs.cut.outputs.branch }}
+      pr-number:
+        description: Number of the promotion PR.
+        value: ${{ jobs.cut.outputs.pr-number }}
+
+jobs:
+  cut:
+    name: 'Cut release/${{ inputs.version }} from ${{ inputs.source-branch }}'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    outputs:
+      branch: ${{ steps.branch.outputs.name }}
+      pr-number: ${{ steps.pr.outputs.number }}
+    steps:
+      - name: Validate version input
+        run: |
+          if ! [[ "${{ inputs.version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version must be semver x.y.z (got: ${{ inputs.version }})"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-branch }}
+          fetch-depth: 0
+          token: ${{ secrets.release-token }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - id: branch
+        name: Verify release branch does not exist + create
+        run: |
+          BRANCH="release/${{ inputs.version }}"
+          echo "name=$BRANCH" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            echo "::error::Branch $BRANCH already exists on origin"
+            exit 1
+          fi
+          git checkout -b "$BRANCH"
+          git push -u origin "$BRANCH"
+          echo "Pushed $BRANCH from ${{ inputs.source-branch }}@$(git rev-parse --short HEAD)"
+
+      - uses: agrippa-io/github-actions/npm/actions/bump-package-json@v1
+        with:
+          branch: ${{ steps.branch.outputs.name }}
+          version: ${{ inputs.version }}
+          gh-token: ${{ secrets.release-token }}
+
+      - id: pr
+        name: Open release PR
+        env:
+          GH_TOKEN: ${{ secrets.release-token }}
+        run: |
+          BRANCH="${{ steps.branch.outputs.name }}"
+          VERSION="${{ inputs.version }}"
+          SOURCE="${{ inputs.source-branch }}"
+          TARGET="${{ inputs.target-branch }}"
+
+          TITLE_INPUT="${{ inputs.pr-title }}"
+          TITLE="${TITLE_INPUT:-chore(release): ${VERSION}}"
+
+          BODY_INPUT='${{ inputs.pr-body }}'
+          if [ -z "$BODY_INPUT" ]; then
+            BODY=$(cat <<EOF
+          Promotes \`$BRANCH\` to \`$TARGET\`.
+
+          \`package.json\` on this branch has been bumped to **${VERSION}**
+          by \`npm-release-stage\` via the GitHub contents API. When this
+          PR is squash-merged, that bump flows into \`$TARGET\` as part of
+          the merge commit and \`npm-publish-latest\` reads the version
+          directly from \`package.json\`. The PR title is cosmetic.
+
+          To publish a **different** version instead, push a follow-up
+          commit to \`$BRANCH\` that edits \`package.json\` to the desired
+          version before merging.
+          EOF
+          )
+          else
+            BODY="${BODY_INPUT//\{version\}/$VERSION}"
+            BODY="${BODY//\{branch\}/$BRANCH}"
+            BODY="${BODY//\{source\}/$SOURCE}"
+            BODY="${BODY//\{target\}/$TARGET}"
+          fi
+
+          DRAFT_FLAG=""
+          if [ "${{ inputs.draft }}" = "true" ]; then
+            DRAFT_FLAG="--draft"
+          fi
+
+          PR_URL=$(gh pr create \
+            --base "$TARGET" \
+            --head "$BRANCH" \
+            --title "$TITLE" \
+            --body "$BODY" \
+            $DRAFT_FLAG)
+          PR_NUMBER=$(echo "$PR_URL" | awk -F/ '{print $NF}')
+          echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "Opened $PR_URL"
