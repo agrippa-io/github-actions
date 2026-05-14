@@ -1,0 +1,139 @@
+name: docker-only-release
+
+# Reusable workflow: opinionated all-in-one release for services that ship
+# a Docker image (to AWS ECR) and don't publish to npm.
+#
+# This is a convenience wrapper for the common case. If you want parallel
+# validate / build / push or different tagging, compose `npm-{lint,test,build}`
+# and `docker-publish-ecr` yourself in your release.yml — that's strictly
+# more powerful but more verbose.
+#
+# Defaults match the docker-only convention:
+#   - Tag the image with the 7-char short SHA of the triggering commit
+#     (immutable, traceable to a specific deploy).
+#   - Also push `latest` so consumers tracking the floating tag stay current.
+#   - No BuildKit secret mount by default — opt in by setting
+#     `buildkit-secret-name` if the build needs private-registry creds.
+
+on:
+  workflow_call:
+    inputs:
+      registry-url:
+        description: 'Full ECR repository URL (e.g. `<account>.dkr.ecr.<region>.amazonaws.com/<repo>`).'
+        required: true
+        type: string
+      aws-region:
+        description: AWS region where the ECR repository lives.
+        required: true
+        type: string
+      tag:
+        description: 'Immutable image tag. Defaults to the 7-char short SHA of the triggering commit.'
+        required: false
+        type: string
+        default: ''
+      also-latest:
+        description: Also push a floating `latest` tag.
+        required: false
+        type: boolean
+        default: true
+      context:
+        description: Docker build context path.
+        required: false
+        type: string
+        default: '.'
+      dockerfile:
+        description: Path to the Dockerfile relative to context.
+        required: false
+        type: string
+        default: Dockerfile
+      buildkit-secret-name:
+        description: 'Optional BuildKit secret name (referenced inside the Dockerfile via `--mount=type=secret,id=<name>`). Empty disables the secret mount.'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      aws-role-arn:
+        description: ARN of the IAM role to assume via OIDC for ECR push.
+        required: true
+      buildkit-secret-value:
+        description: 'Value mounted into the build as a BuildKit secret. Required if `buildkit-secret-name` is non-empty.'
+        required: false
+    outputs:
+      tag:
+        description: Tag that was applied to the pushed image (defaults to short SHA if input was empty).
+        value: ${{ jobs.push.outputs.tag }}
+
+jobs:
+  push:
+    name: Build + push to ECR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write    # AWS OIDC
+    outputs:
+      tag: ${{ steps.tag.outputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: tag
+        name: Resolve image tag
+        shell: bash
+        run: |
+          INPUT_TAG="${{ inputs.tag }}"
+          if [ -n "$INPUT_TAG" ]; then
+            VALUE="$INPUT_TAG"
+          else
+            VALUE=$(echo "${{ github.sha }}" | cut -c1-7)
+          fi
+          echo "value=$VALUE" >> "$GITHUB_OUTPUT"
+          echo "Pushing image with tag: $VALUE"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.aws-role-arn }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Log in to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - id: tags
+        name: Compose image tags
+        shell: bash
+        run: |
+          TAGS="${{ inputs.registry-url }}:${{ steps.tag.outputs.value }}"
+          if [ "${{ inputs.also-latest }}" = "true" ]; then
+            TAGS="${TAGS}"$'\n'"${{ inputs.registry-url }}:latest"
+          fi
+          {
+            echo 'tags<<EOF'
+            echo "$TAGS"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push (with BuildKit secret mount)
+        if: ${{ inputs.buildkit-secret-name != '' }}
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.context }}/${{ inputs.dockerfile }}
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          secrets: |
+            ${{ inputs.buildkit-secret-name }}=${{ secrets.buildkit-secret-value }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push (no secret mount)
+        if: ${{ inputs.buildkit-secret-name == '' }}
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.context }}/${{ inputs.dockerfile }}
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

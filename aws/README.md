@@ -7,6 +7,7 @@ reusable workflows live at that path. This README documents them.
 | Reusable workflow | Purpose |
 | ----------------- | ------- |
 | [`docker-publish-ecr.yml`](#docker-publish-ecryml) | Build a Docker image and push it to AWS ECR with OIDC auth + BuildKit caching |
+| [`docker-only-release.yml`](#docker-only-releaseyml) | Opinionated all-in-one release for services that ship Docker but don't publish to npm |
 
 ## Pinning
 
@@ -93,3 +94,72 @@ The role's permission policy needs the standard ECR push set:
 The ECR repository must already exist; ECR does not auto-create on first
 push. Tag immutability (`--image-tag-mutability IMMUTABLE`) is recommended
 so the `vX.Y.Z` tag cannot be overwritten while `latest` rotates.
+
+---
+
+## `docker-only-release.yml`
+
+Opinionated all-in-one release workflow for services that ship a Docker
+image to ECR and don't publish to npm. Different from
+[`docker-publish-ecr.yml`](#docker-publish-ecryml) only in defaults — this
+one defaults `tag` to the 7-char short SHA of the triggering commit, which
+matches the convention used by services without a `package.json#version`.
+
+For services that *do* have npm + Docker (like react-components), use
+`docker-publish-ecr.yml` after `npm-publish-latest.yml` and pass the
+released `vX.Y.Z` tag explicitly.
+
+For services that *want* a CI gate before the push (parallel format /
+lint / test / build), compose the npm reusable workflows yourself in the
+consumer's release.yml and gate this job on `build`. The convenience win
+here is just for the simple "push to main → docker push" case.
+
+| Input | Required | Default | Description |
+| ----- | -------- | ------- | ----------- |
+| `registry-url` | **yes** | — | Full ECR repository URL |
+| `aws-region` | **yes** | — | AWS region for ECR |
+| `tag` | no | `<7-char-sha>` | Immutable tag for the image |
+| `also-latest` | no | `true` | Also push a floating `latest` tag |
+| `context` | no | `.` | Docker build context |
+| `dockerfile` | no | `Dockerfile` | Path to Dockerfile relative to context |
+| `buildkit-secret-name` | no | `''` (off) | Name of an optional BuildKit secret mount |
+
+| Secret | Required | Description |
+| ------ | -------- | ----------- |
+| `aws-role-arn` | **yes** | IAM role to assume via OIDC |
+| `buildkit-secret-value` | conditional | Required if `buildkit-secret-name` is set |
+
+| Output | Description |
+| ------ | ----------- |
+| `tag` | Tag that was applied (resolved from input or short SHA fallback) |
+
+```yaml
+# Consumer's release.yml — the trivial case.
+name: release
+on:
+  push: { branches: [main] }
+jobs:
+  release:
+    uses: agrippa-io/github-actions/.github/workflows/docker-only-release.yml@v1
+    with:
+      registry-url: ${{ vars.URL_DOCKER_REGISTRY }}
+      aws-region: us-west-1
+    secrets:
+      aws-role-arn: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+```
+
+```yaml
+# Or, with a CI gate first.
+jobs:
+  lint:  { uses: agrippa-io/github-actions/.github/workflows/npm-lint.yml@v1,  with: { npm-scope: '@agrippa-io' }, secrets: { npm-token: '${{ secrets.NPM_TOKEN }}' } }
+  test:  { uses: agrippa-io/github-actions/.github/workflows/npm-test.yml@v1,  with: { npm-scope: '@agrippa-io' }, secrets: { npm-token: '${{ secrets.NPM_TOKEN }}' } }
+  build: { needs: [lint, test], uses: agrippa-io/github-actions/.github/workflows/npm-build.yml@v1, with: { npm-scope: '@agrippa-io', upload-artifact: false }, secrets: { npm-token: '${{ secrets.NPM_TOKEN }}' } }
+  release:
+    needs: build
+    uses: agrippa-io/github-actions/.github/workflows/docker-only-release.yml@v1
+    with:
+      registry-url: ${{ vars.URL_DOCKER_REGISTRY }}
+      aws-region: us-west-1
+    secrets:
+      aws-role-arn: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+```

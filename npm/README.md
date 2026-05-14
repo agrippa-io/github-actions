@@ -10,6 +10,7 @@ Two layers:
 | [`setup-yarn-project`](#setup-yarn-project) | `setup-node` + scoped npm registry + `yarn install --frozen-lockfile` |
 | [`bump-package-json`](#bump-package-json) | Verified-signed commit that updates `package.json#version` on a branch, via the contents API |
 | [`compute-prerelease-version`](#compute-prerelease-version) | Append a suffix to the base version and pin `package.json` in-runner |
+| [`compute-dev-suffix`](#compute-dev-suffix) | Look up the PR associated with a commit, emit a `dev.<pr>.<sha>` suffix |
 | [`playwright-cached-chromium`](#playwright-cached-chromium) | Cache + install Playwright Chromium for browser-based tests |
 | [`create-release-and-tag`](#create-release-and-tag) | `repos.createRelease` wrapper that pins the tag to a specific commit |
 
@@ -138,6 +139,57 @@ Run **after** `actions/checkout` — this action reads/writes the local file.
     suffix: canary.${{ env.SHORT_SHA }}
 - run: npm publish --tag canary --access restricted
 - run: echo "Published ${{ steps.version.outputs.version }}"
+```
+
+---
+
+## `compute-dev-suffix`
+
+Look up the PR associated with the triggering commit (via
+`repos.listPullRequestsAssociatedWithCommit`) and emit a `dev.<pr>.<sha>`
+suffix suitable for feeding into [`npm-publish-prerelease`'s `version-suffix`
+input](#npm-publish-prereleaseyml).
+
+Designed for the publish-dev pattern in release workflows: when a PR
+merges to `develop`, the resulting dev prerelease should be traceable to
+both the PR and the merge commit. This action does that lookup once,
+emits the composed suffix, and the publish workflow consumes it.
+
+Falls back to `dev.0.<github.sha>` when the commit isn't associated with
+a PR (e.g. a direct push), which is rare but worth handling gracefully.
+
+| Input | Required | Default | Description |
+| ----- | -------- | ------- | ----------- |
+| `sha` | no | `${{ github.sha }}` | Commit SHA to look up |
+| `fallback-pr-number` | no | `0` | PR number used when no PR is associated |
+
+| Output | Description |
+| ------ | ----------- |
+| `suffix` | Composed suffix (`dev.<pr>.<short-sha>`) |
+| `pr-number` | PR number (or the fallback) |
+| `short-sha` | 7-char SHA used in the suffix |
+
+```yaml
+compute-dev-suffix:
+  if: github.ref == 'refs/heads/develop'
+  needs: build
+  runs-on: ubuntu-latest
+  permissions: { contents: read, pull-requests: read }
+  outputs:
+    suffix: ${{ steps.dev.outputs.suffix }}
+  steps:
+    - id: dev
+      uses: agrippa-io/github-actions/npm/actions/compute-dev-suffix@v1
+
+publish-dev:
+  needs: [build, compute-dev-suffix]
+  uses: agrippa-io/github-actions/.github/workflows/npm-publish-prerelease.yml@v1
+  with:
+    npm-scope: '@agrippa-io'
+    dist-tag: dev
+    version-suffix: ${{ needs.compute-dev-suffix.outputs.suffix }}
+  secrets:
+    npm-token: ${{ secrets.NPM_TOKEN }}
 ```
 
 ---

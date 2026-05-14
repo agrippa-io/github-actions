@@ -61,4 +61,8 @@ so regressions are caught before a tag is cut.
    re-implementing their logic. The reusable workflow's job is
    orchestration, not implementation.
 
-See [`npm/README.md`](./npm/README.md) for the action reference.
+See [`npm/README.md`](./npm/README.md) for the action reference,
+[`aws/README.md`](./aws/README.md) for the Docker/ECR workflows, and
+[`MIGRATION.md`](./MIGRATION.md) for the per-consumer playbook (how to
+wire ci.yml + release.yml in a new repo by archetype: npm package /
+frontend app / docker-only service).
