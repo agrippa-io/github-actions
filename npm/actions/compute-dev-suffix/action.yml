@@ -1,0 +1,62 @@
+name: Compute dev prerelease suffix
+description: >
+  Look up the pull request associated with the triggering commit (via
+  `repos.listPullRequestsAssociatedWithCommit`) and emit a `dev`-style
+  prerelease suffix of the form `dev.<pr-number>.<short-sha>` suitable
+  for piping into `npm-publish-prerelease.yml`'s `version-suffix` input.
+
+  Falls back to `0` for the PR number and `github.sha` for the SHA if the
+  commit isn't associated with a PR (e.g. a direct push to the target
+  branch). Designed to be the "look up the PR" step at the front of a
+  consumer's publish-dev job so the publish workflow itself doesn't need
+  to know about the PR-association lookup.
+
+inputs:
+  sha:
+    description: 'Commit SHA to look up. Defaults to the workflow''s triggering SHA.'
+    required: false
+    default: ${{ github.sha }}
+  fallback-pr-number:
+    description: PR number to use when no PR is associated with the commit.
+    required: false
+    type: string
+    default: '0'
+
+outputs:
+  suffix:
+    description: 'Composed suffix, e.g. `dev.42.abc1234`.'
+    value: ${{ steps.compute.outputs.suffix }}
+  pr-number:
+    description: PR number associated with the commit (or the fallback).
+    value: ${{ steps.compute.outputs.pr-number }}
+  short-sha:
+    description: 7-char SHA used in the suffix.
+    value: ${{ steps.compute.outputs.short-sha }}
+
+runs:
+  using: composite
+  steps:
+    - id: compute
+      uses: actions/github-script@v7
+      env:
+        INPUT_SHA: ${{ inputs.sha }}
+        INPUT_FALLBACK_PR_NUMBER: ${{ inputs.fallback-pr-number }}
+      with:
+        script: |
+          const sha = process.env.INPUT_SHA
+          const fallbackPr = process.env.INPUT_FALLBACK_PR_NUMBER
+
+          const { data } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            commit_sha: sha,
+          })
+
+          const pr = data[0]?.number ?? Number(fallbackPr)
+          const shortSha = (data[0]?.merge_commit_sha ?? sha).slice(0, 7)
+          const suffix = `dev.${pr}.${shortSha}`
+
+          core.setOutput('pr-number', pr)
+          core.setOutput('short-sha', shortSha)
+          core.setOutput('suffix', suffix)
+          core.info(`Computed dev suffix: ${suffix}`)
