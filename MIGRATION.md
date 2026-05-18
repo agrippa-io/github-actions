@@ -330,7 +330,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: shellcheck --severity=warning deploy/scripts/*.sh
+
+  # Aggregate gate — the org ruleset requires this one stable check name.
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs: [helm, shellcheck]
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          [ "${{ needs.helm.result }}" = "success" ] \
+            && [ "${{ needs.shellcheck.result }}" = "success" ]
 ```
+
+> **Org-wide convention:** every consumer's `ci.yml` ends with a `ci-ok` job
+> that `needs` all other jobs. The org branch ruleset then requires the single
+> check `ci-ok` for every repo, regardless of each repo's individual jobs —
+> one ruleset enforces Git Flow workspace-wide.
 
 ### `.github/workflows/release.yml`
 
