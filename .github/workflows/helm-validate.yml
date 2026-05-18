@@ -1,0 +1,49 @@
+name: helm-validate
+
+# Reusable workflow: lint a Helm chart and confirm it renders against its
+# base values plus every `values-*.yaml` overlay. The CI gate for infra /
+# Helm-chart repos (archetype 4), which have no npm build/test to run.
+
+on:
+  workflow_call:
+    inputs:
+      chart-path:
+        description: Path to the Helm chart directory (contains Chart.yaml).
+        required: true
+        type: string
+      helm-version:
+        description: Helm version to install.
+        required: false
+        type: string
+        default: v3.16.3
+
+jobs:
+  helm-validate:
+    name: helm lint + template
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: ${{ inputs.helm-version }}
+
+      - name: helm lint
+        run: helm lint "${{ inputs.chart-path }}"
+
+      - name: helm template — base values and each overlay
+        run: |
+          chart="${{ inputs.chart-path }}"
+          base="$chart/values.yaml"
+          echo "== render: values.yaml =="
+          helm template ci "$chart" -f "$base" >/dev/null
+          for overlay in "$chart"/values-*.yaml; do
+            [ -e "$overlay" ] || continue
+            case "$overlay" in
+              *.example.yaml) continue ;;
+            esac
+            echo "== render: values.yaml + $(basename "$overlay") =="
+            helm template ci "$chart" -f "$base" -f "$overlay" >/dev/null
+          done
+          echo "all renders succeeded"

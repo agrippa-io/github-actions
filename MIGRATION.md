@@ -4,11 +4,12 @@ This is the per-repo recipe for adopting the shared workflows. Pin to
 [`@v1`](https://github.com/agrippa-io/github-actions/releases) for routine
 consumption; use exact tags (`@v1.2.0`) when reproducibility matters.
 
-Three consumer archetypes cover almost everything in the workspace:
+Four consumer archetypes cover almost everything in the workspace:
 
 1. **Published npm package** (a `@agrippa-io/*` library) — full CI + release flow.
 2. **Frontend / unpublished node project** (Vite app, e2e harness) — CI gates only, no publish.
 3. **Docker-only service** (a node service deployed as a container) — CI gates + Docker push, no npm publish.
+4. **Helm / infra repo** (the `agrippa-stack` deploy workspace) — `helm`-based CI gates + gitflow, no build artifact.
 
 For each archetype, copy the matching template into the consumer's
 `.github/workflows/`, adjust the inputs to the project's conventions, and
@@ -299,6 +300,72 @@ jobs:
 - **`URL_DOCKER_REGISTRY`** must be set as a repo or environment variable.
 - **AWS role trust policy** must include the consumer repo's identity. See [`aws/README.md`](./aws/README.md#aws-side-prerequisites).
 - **Tag immutability on the ECR repo** is recommended so the short-SHA tags can't be overwritten.
+
+---
+
+## Archetype 4: Helm / infra repo
+
+**Example:** `agrippa-stack` — the `repos-agrippa` deploy workspace (Helm chart,
+docker-compose, scripts). It builds no npm package or image, so CI validates
+the Helm chart instead of running a build.
+
+### `.github/workflows/ci.yml`
+
+```yaml
+name: ci
+on:
+  pull_request:
+    branches: [develop, 'release/**', main]
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  helm:
+    uses: agrippa-io/github-actions/.github/workflows/helm-validate.yml@v1
+    with: { chart-path: deploy/helm/agrippa-stack }
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: shellcheck --severity=warning deploy/scripts/*.sh
+```
+
+### `.github/workflows/release.yml`
+
+Re-validate on push; on `main`, back-merge to `develop` (read the chart
+version from `Chart.yaml` in a prior job and pass it to `gitflow-sync-back`):
+
+```yaml
+name: release
+on:
+  push: { branches: [develop, 'release/**', main] }
+concurrency: { group: 'release-${{ github.ref }}', cancel-in-progress: false }
+
+jobs:
+  helm:
+    uses: agrippa-io/github-actions/.github/workflows/helm-validate.yml@v1
+    with: { chart-path: deploy/helm/agrippa-stack }
+
+  sync-develop:
+    if: github.ref == 'refs/heads/main'
+    needs: helm
+    uses: agrippa-io/github-actions/.github/workflows/gitflow-sync-back.yml@v1
+    with: { version: '<chart version from Chart.yaml>' }
+    secrets: { release-token: '${{ secrets.RELEASE_TOKEN }}' }
+```
+
+### Things to adjust per-repo
+
+- **`chart-path`** — the directory containing `Chart.yaml`.
+- **`helm-validate`** lints the chart and renders `values.yaml` plus every
+  `values-*.yaml` overlay (skipping `*.example.yaml`). Name per-environment
+  overlays `values-<env>.yaml`.
+- **`release-stage.yml`** bumps `Chart.yaml` `version` (not `package.json`) —
+  see agrippa-stack's copy for the inline cut-branch + promotion-PR steps.
+- **Only `RELEASE_TOKEN`** is required (for `gitflow-sync-back` and
+  `release-stage`); the CI gates themselves need no secrets.
 
 ---
 
