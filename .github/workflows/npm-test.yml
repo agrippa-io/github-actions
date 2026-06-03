@@ -28,10 +28,25 @@ on:
         type: boolean
         default: false
       test-command:
-        description: 'Shell command (sans `yarn ` prefix) for the test invocation. Defaults to vitest with coverage.'
+        description: 'Local binary + args for the test invocation (run via `yarn`/`npx`, NOT a package.json script name). Defaults to vitest with coverage; for jest/mocha pass e.g. `jest --coverage`.'
         required: false
         type: string
         default: 'vitest run --coverage'
+      package-manager:
+        description: '`auto` (detect yarn vs npm from the lockfile), `yarn`, or `npm`.'
+        required: false
+        type: string
+        default: auto
+      with-postgres:
+        description: 'Start a throwaway Postgres container before the tests for DB-backed suites that do NOT self-manage one (Testcontainers users leave this false). Exposes DATABASE_URL=postgres://ci:ci@localhost:5432/ci.'
+        required: false
+        type: boolean
+        default: false
+      postgres-version:
+        description: 'Postgres image tag started when `with-postgres` is true.'
+        required: false
+        type: string
+        default: '16-alpine'
     secrets:
       npm-token:
         description: NPM auth token used during install.
@@ -44,15 +59,37 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: agrippa-io/github-actions/npm/actions/setup-yarn-project@v1
+      - id: setup
+        uses: agrippa-io/github-actions/npm/actions/setup-node-project@v1
         with:
           npm-scope: ${{ inputs.npm-scope }}
           node-version-file: ${{ inputs.node-version-file }}
           registry-url: ${{ inputs.registry-url }}
           npm-token: ${{ secrets.npm-token }}
+          package-manager: ${{ inputs.package-manager }}
 
       - if: ${{ inputs.with-playwright }}
         uses: agrippa-io/github-actions/npm/actions/playwright-cached-chromium@v1
 
+      # A reusable workflow cannot conditionally define a `services:` block, so
+      # opt-in DB suites start Postgres via docker run (which IS gate-able).
+      - if: ${{ inputs.with-postgres }}
+        name: Start Postgres
+        shell: bash
+        run: |
+          docker run -d --name ci-postgres \
+            -e POSTGRES_USER=ci -e POSTGRES_PASSWORD=ci -e POSTGRES_DB=ci \
+            -p 5432:5432 postgres:${{ inputs.postgres-version }}
+          for i in $(seq 1 30); do
+            docker exec ci-postgres pg_isready -U ci -d ci && break
+            echo "waiting for postgres ($i)..."; sleep 1
+          done
+          echo "DATABASE_URL=postgres://ci:ci@localhost:5432/ci" >> "$GITHUB_ENV"
+
       - name: Test
-        run: yarn ${{ inputs.test-command }}
+        shell: bash
+        env:
+          PM: ${{ steps.setup.outputs.package-manager }}
+        run: |
+          EXEC=$([ "$PM" = "yarn" ] && echo "yarn" || echo "npx --no-install")
+          $EXEC ${{ inputs.test-command }}

@@ -7,7 +7,8 @@ Two layers:
 
 | Composite action | Purpose |
 | ---------------- | ------- |
-| [`setup-yarn-project`](#setup-yarn-project) | `setup-node` + scoped npm registry + `yarn install --frozen-lockfile` |
+| [`setup-node-project`](#setup-node-project) | Package-manager-agnostic `setup-node` + scoped registry + frozen install (detects yarn vs npm). **Prefer this** for new consumers. |
+| [`setup-yarn-project`](#setup-yarn-project) | yarn-only variant of the above; kept for back-compat |
 | [`bump-package-json`](#bump-package-json) | Verified-signed commit that updates `package.json#version` on a branch, via the contents API |
 | [`compute-prerelease-version`](#compute-prerelease-version) | Append a suffix to the base version and pin `package.json` in-runner |
 | [`compute-dev-suffix`](#compute-dev-suffix) | Look up the PR associated with a commit, emit a `dev.<pr>.<sha>` suffix |
@@ -43,7 +44,53 @@ consumer breaks the instant the shared repo gets a bad commit. Tag from
 
 ---
 
+## `setup-node-project`
+
+Package-manager-agnostic project setup. Detects the package manager from the
+lockfile (`yarn.lock` → yarn, `package-lock.json` → npm, neither → npm) — or
+honors an explicit `package-manager` input — then configures `setup-node`
+with the matching cache, points the scope at the registry, and installs from
+the frozen lockfile (`yarn install --frozen-lockfile` / `npm ci`). Exposes the
+resolved manager as the `package-manager` output so the calling workflow can
+choose `yarn` vs `npx` / `npm run` for its own steps.
+
+This supersedes [`setup-yarn-project`](#setup-yarn-project). The four reusable
+workflows (`npm-format`/`npm-lint`/`npm-test`/`npm-build`) all use it, which is
+why they now work for both yarn (`react-components`) and npm (every node
+service) repos.
+
+Caller is responsible for `actions/checkout@v4`.
+
+| Input | Required | Default | Description |
+| ----- | -------- | ------- | ----------- |
+| `node-version-file` | no | `.nvmrc` | Passed to `actions/setup-node` |
+| `npm-scope` | **yes** | — | npm scope (`@agrippa-io` or `agrippa-io`) |
+| `registry-url` | no | `https://registry.npmjs.org` | Registry the scope authenticates against |
+| `npm-token` | **yes** | — | Pass a secret; never hardcode |
+| `package-manager` | no | `auto` | `auto` detects from lockfile; force with `yarn` or `npm` |
+
+| Output | Description |
+| ------ | ----------- |
+| `package-manager` | Resolved manager — `yarn` or `npm` |
+
+```yaml
+- uses: actions/checkout@v4
+- id: setup
+  uses: agrippa-io/github-actions/npm/actions/setup-node-project@v1
+  with:
+    npm-scope: '@agrippa-io'
+    npm-token: ${{ secrets.NPM_TOKEN }}
+- run: |
+    EXEC=$([ "${{ steps.setup.outputs.package-manager }}" = yarn ] && echo yarn || echo "npx --no-install")
+    $EXEC eslint .
+```
+
+---
+
 ## `setup-yarn-project`
+
+> Legacy — prefer [`setup-node-project`](#setup-node-project) unless you
+> specifically want to pin yarn-only behavior.
 
 Encapsulates the three lines every npm-publishing job repeats:
 
@@ -286,6 +333,7 @@ workflows it calls with all of its secrets.
 | `node-version-file` | no | `.nvmrc` | Forwarded to `setup-yarn-project` |
 | `registry-url` | no | `https://registry.npmjs.org` | npm registry |
 | `source-glob` | no | `src/**/*.{ts,tsx}` | Passed to `prettier --check` |
+| `package-manager` | no | `auto` | `auto` / `yarn` / `npm` |
 
 | Secret | Required | Description |
 | ------ | -------- | ----------- |
@@ -315,6 +363,7 @@ agrippa-io node repos.
 | `registry-url` | no | `https://registry.npmjs.org` | npm registry |
 | `lint-paths` | no | `. --ext .ts,.tsx` | Args after the eslint binary |
 | `max-warnings` | no | `0` | Forwarded to `eslint --max-warnings`; `-1` disables the gate |
+| `package-manager` | no | `auto` | `auto` / `yarn` / `npm` |
 
 | Secret | Required | Description |
 | ------ | -------- | ----------- |
@@ -345,7 +394,10 @@ the tests run.
 | `node-version-file` | no | `.nvmrc` | Forwarded to `setup-yarn-project` |
 | `registry-url` | no | `https://registry.npmjs.org` | npm registry |
 | `with-playwright` | no | `false` | Cache + install Playwright Chromium before tests |
-| `test-command` | no | `vitest run --coverage` | Test invocation (after `yarn`) |
+| `test-command` | no | `vitest run --coverage` | Local binary + args (run via `yarn`/`npx`), **not** a script name. For jest/mocha pass e.g. `jest --coverage` |
+| `package-manager` | no | `auto` | `auto` / `yarn` / `npm` |
+| `with-postgres` | no | `false` | Start a throwaway Postgres for DB suites that don't use Testcontainers; exposes `DATABASE_URL=postgres://ci:ci@localhost:5432/ci` |
+| `postgres-version` | no | `16-alpine` | Postgres image tag when `with-postgres` is true |
 
 | Secret | Required | Description |
 | ------ | -------- | ----------- |
@@ -374,8 +426,9 @@ via `actions/download-artifact` instead of rebuilding.
 | `npm-scope` | **yes** | — | npm scope |
 | `node-version-file` | no | `.nvmrc` | Forwarded to `setup-yarn-project` |
 | `registry-url` | no | `https://registry.npmjs.org` | npm registry |
-| `build-script` | no | `build` | yarn script that produces the artifact |
-| `with-storybook` | no | `false` | Also run `yarn build:storybook` |
+| `build-script` | no | `build` | package.json script that produces the artifact (`yarn <s>` / `npm run <s>`) |
+| `with-storybook` | no | `false` | Also run the `build:storybook` script |
+| `package-manager` | no | `auto` | `auto` / `yarn` / `npm` |
 | `upload-artifact` | no | `true` | Upload `artifact-path` as a workflow artifact |
 | `artifact-name` | no | `dist` | Artifact name (consumer can interpolate `${{ github.event.pull_request.head.sha }}` for traceability) |
 | `artifact-path` | no | `dist/` | Path uploaded |
