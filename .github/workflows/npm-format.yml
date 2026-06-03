@@ -26,6 +26,11 @@ on:
         required: false
         type: string
         default: 'src/**/*.{ts,tsx}'
+      package-manager:
+        description: '`auto` (detect yarn vs npm from the lockfile), `yarn`, or `npm`.'
+        required: false
+        type: string
+        default: auto
     secrets:
       npm-token:
         description: NPM auth token used during install (needed even for format-only because peer deps may be private).
@@ -38,12 +43,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: agrippa-io/github-actions/npm/actions/setup-yarn-project@v1
+      - id: setup
+        uses: agrippa-io/github-actions/npm/actions/setup-node-project@v1
         with:
           npm-scope: ${{ inputs.npm-scope }}
           node-version-file: ${{ inputs.node-version-file }}
           registry-url: ${{ inputs.registry-url }}
           npm-token: ${{ secrets.npm-token }}
+          package-manager: ${{ inputs.package-manager }}
 
       - name: prettier --check
-        run: yarn prettier --check '${{ inputs.source-glob }}'
+        shell: bash
+        env:
+          PM: ${{ steps.setup.outputs.package-manager }}
+        run: |
+          EXEC=$([ "$PM" = "yarn" ] && echo "yarn" || echo "npx --no-install")
+          $EXEC prettier --check '${{ inputs.source-glob }}'

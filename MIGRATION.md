@@ -19,6 +19,34 @@ follow the per-archetype notes below.
 exercises every primitive in the shared repo. When in doubt, look at how
 react-components does it.
 
+## Package manager (npm or yarn)
+
+The `npm-format` / `npm-lint` / `npm-test` / `npm-build` reusable workflows are
+**package-manager-agnostic**. They call the `setup-node-project` composite,
+which detects yarn vs npm from the lockfile (`yarn.lock` → yarn,
+`package-lock.json` → npm) and runs the matching install + commands. So the
+yaml below is identical whether your repo is yarn (`react-components`) or npm
+(every node service) — no per-repo flag needed. Force it with
+`package-manager: npm | yarn` only if a repo has both lockfiles or none.
+
+Two npm-vs-yarn semantics to know:
+
+- **`test-command`** is a *binary + args* run via `yarn` / `npx` — e.g.
+  `vitest run --coverage` (default), `jest --coverage`, `mocha dist/**/*.spec.js`.
+  It is **not** a package.json script name. `build-script`, by contrast, *is* a
+  script name (`yarn <s>` / `npm run <s>`).
+- DB-backed test suites that don't self-manage a database (Testcontainers) can
+  set **`with-postgres: true`** on the `test` job — it starts a throwaway
+  Postgres and exposes `DATABASE_URL=postgres://ci:ci@localhost:5432/ci`.
+
+## The `ci-ok` gate is mandatory
+
+Every consumer's `ci.yml` **must** end with a `ci-ok` job that `needs` all
+other jobs (see archetype 4 for the canonical shape). The org branch ruleset
+requires the single check **`ci-ok`** on `main` / `develop*` / `release/**`, so
+a repo without it will have its PRs blocked. Repos with nothing to build
+(Dockerfile-only images, placeholders) still need a trivially-green `ci-ok`.
+
 ## Prerequisites
 
 Each consumer needs:

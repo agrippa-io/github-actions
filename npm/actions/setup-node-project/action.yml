@@ -1,0 +1,86 @@
+name: Setup node project
+description: >
+  Package-manager-agnostic project setup. Detects yarn vs npm from the
+  lockfile (or honors an explicit `package-manager` input), configures Node
+  from .nvmrc, points the package manager at a scoped private registry, and
+  installs dependencies from the frozen lockfile with NODE_AUTH_TOKEN. Caller
+  is responsible for `actions/checkout@v4` because checkout options (ref,
+  fetch-depth, token) vary too much by job to bake in here.
+
+  Exposes the resolved package manager as the `package-manager` output so the
+  calling workflow can choose `yarn` vs `npx` / `npm run` for its own steps.
+  Supersedes `setup-yarn-project` (kept for back-compat); new consumers should
+  use this.
+
+inputs:
+  node-version-file:
+    description: Path to the file holding the Node version (passed to actions/setup-node).
+    required: false
+    default: .nvmrc
+  npm-scope:
+    description: >
+      Private npm scope (e.g. `@agrippa-io` or `agrippa-io` — both forms are
+      accepted by setup-node). Becomes the `scope:` field on the setup-node step.
+    required: true
+  registry-url:
+    description: Registry the scope authenticates against for installs/publishes.
+    required: false
+    default: https://registry.npmjs.org
+  npm-token:
+    description: >
+      NPM auth token used as NODE_AUTH_TOKEN during install (and visible to
+      subsequent steps in the same job through the cached `.npmrc` setup-node
+      writes). Pass a secret — never hardcode.
+    required: true
+  package-manager:
+    description: >
+      `auto` (default) detects yarn vs npm from the lockfile (yarn.lock →
+      yarn, package-lock.json → npm, neither → npm). Set to `yarn` or `npm`
+      to force one.
+    required: false
+    default: auto
+
+outputs:
+  package-manager:
+    description: The resolved package manager — `yarn` or `npm`.
+    value: ${{ steps.detect.outputs.package-manager }}
+
+runs:
+  using: composite
+  steps:
+    - id: detect
+      name: Detect package manager
+      shell: bash
+      run: |
+        PM="${{ inputs.package-manager }}"
+        if [ "$PM" = "auto" ]; then
+          if [ -f yarn.lock ]; then
+            PM=yarn
+          elif [ -f package-lock.json ]; then
+            PM=npm
+          else
+            echo "No lockfile found; defaulting to npm." >&2
+            PM=npm
+          fi
+        fi
+        echo "Resolved package manager: $PM"
+        echo "package-manager=$PM" >> "$GITHUB_OUTPUT"
+
+    - name: Setup Node
+      uses: actions/setup-node@v4
+      with:
+        node-version-file: ${{ inputs.node-version-file }}
+        cache: ${{ steps.detect.outputs.package-manager }}
+        registry-url: ${{ inputs.registry-url }}
+        scope: ${{ inputs.npm-scope }}
+
+    - name: Install dependencies
+      shell: bash
+      env:
+        NODE_AUTH_TOKEN: ${{ inputs.npm-token }}
+      run: |
+        if [ "${{ steps.detect.outputs.package-manager }}" = "yarn" ]; then
+          yarn install --frozen-lockfile
+        else
+          npm ci
+        fi

@@ -31,6 +31,11 @@ on:
         required: false
         type: number
         default: 0
+      package-manager:
+        description: '`auto` (detect yarn vs npm from the lockfile), `yarn`, or `npm`.'
+        required: false
+        type: string
+        default: auto
     secrets:
       npm-token:
         description: NPM auth token used during install.
@@ -43,12 +48,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: agrippa-io/github-actions/npm/actions/setup-yarn-project@v1
+      - id: setup
+        uses: agrippa-io/github-actions/npm/actions/setup-node-project@v1
         with:
           npm-scope: ${{ inputs.npm-scope }}
           node-version-file: ${{ inputs.node-version-file }}
           registry-url: ${{ inputs.registry-url }}
           npm-token: ${{ secrets.npm-token }}
+          package-manager: ${{ inputs.package-manager }}
 
       - name: eslint
-        run: yarn eslint ${{ inputs.lint-paths }} --max-warnings=${{ inputs.max-warnings }}
+        shell: bash
+        env:
+          PM: ${{ steps.setup.outputs.package-manager }}
+        run: |
+          # yarn runs the local binary directly; npm needs npx for binaries.
+          EXEC=$([ "$PM" = "yarn" ] && echo "yarn" || echo "npx --no-install")
+          $EXEC eslint ${{ inputs.lint-paths }} --max-warnings=${{ inputs.max-warnings }}
