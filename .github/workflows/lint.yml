@@ -1,0 +1,68 @@
+name: lint
+
+# CI guard for this repo's own workflow and action definitions.
+#
+# The `yaml-syntax` job exists because of a recurring, hard-to-spot bug class:
+# an unquoted YAML scalar (typically an input `description`) that contains a
+# colon-space — e.g. `Override the default PR title `chore(release): <version>``
+# or `Ignored when `generate-release-notes: true``. YAML reads the embedded
+# `: ` as a mapping separator, so the file fails to parse. Because consumers
+# resolve these reusable workflows/actions through the moving `@v1` tag, a
+# broken manifest is only discovered when a downstream repo's CI blows up with
+# "mapping values are not allowed in this context" — not here, where it was
+# introduced. Parsing every YAML file under the action/workflow roots catches
+# it at PR time instead.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lint-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  yaml-syntax:
+    name: YAML syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse every YAML file under .github/, npm/, aws/
+        run: |
+          fail=0
+          count=0
+          while IFS= read -r f; do
+            count=$((count + 1))
+            if ! err=$(ruby -ryaml -e 'begin; YAML.load_stream(File.read(ARGV[0])); rescue => e; STDERR.puts(e.message.lines.first.to_s.strip); exit 1; end' "$f" 2>&1); then
+              echo "::error file=$f::$err"
+              fail=1
+            fi
+          done < <(find .github npm aws -type f \( -name '*.yml' -o -name '*.yaml' \) | sort)
+          if [ "$fail" -ne 0 ]; then
+            echo "One or more YAML files failed to parse (see annotations above)."
+            exit 1
+          fi
+          echo "All $count YAML files parsed cleanly."
+
+  actionlint:
+    name: actionlint (advisory)
+    runs-on: ubuntu-latest
+    # Advisory: actionlint surfaces workflow-semantic issues (expression typos,
+    # bad contexts, shellcheck findings in `run:` blocks) that the syntax parse
+    # can't see, but it only covers .github/workflows — not the npm/ and aws/
+    # action manifests — and has not been triaged against this repo's existing
+    # backlog. It reports without blocking; drop `continue-on-error` to make it
+    # a required gate once the repo is clean.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install + run actionlint
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+          "$(go env GOPATH)/bin/actionlint" -color
