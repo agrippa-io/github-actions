@@ -39,7 +39,7 @@ on:
         type: boolean
         default: true
       pr-title:
-        description: Override the default PR title `chore(release): <version>`.
+        description: 'Override the default PR title `chore(release): <version>`.'
         required: false
         type: string
         default: ''
