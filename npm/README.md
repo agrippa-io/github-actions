@@ -68,6 +68,7 @@ Caller is responsible for `actions/checkout@v4`.
 | `registry-url` | no | `https://registry.npmjs.org` | Registry the scope authenticates against |
 | `npm-token` | **yes** | — | Pass a secret; never hardcode |
 | `package-manager` | no | `auto` | `auto` detects from lockfile; force with `yarn` or `npm` |
+| `legacy-peer-deps` | no | `false` | `npm ci --legacy-peer-deps` (npm only) |
 
 | Output | Description |
 | ------ | ----------- |
@@ -334,6 +335,7 @@ workflows it calls with all of its secrets.
 | `registry-url` | no | `https://registry.npmjs.org` | npm registry |
 | `source-glob` | no | `src/**/*.{ts,tsx}` | Passed to `prettier --check` |
 | `package-manager` | no | `auto` | `auto` / `yarn` / `npm` |
+| `legacy-peer-deps` | no | `false` | `npm ci --legacy-peer-deps` (npm only) |
 
 | Secret | Required | Description |
 | ------ | -------- | ----------- |
@@ -364,6 +366,7 @@ agrippa-io node repos.
 | `lint-paths` | no | `. --ext .ts,.tsx` | Args after the eslint binary |
 | `max-warnings` | no | `0` | Forwarded to `eslint --max-warnings`; `-1` disables the gate |
 | `package-manager` | no | `auto` | `auto` / `yarn` / `npm` |
+| `legacy-peer-deps` | no | `false` | `npm ci --legacy-peer-deps` (npm only) |
 
 | Secret | Required | Description |
 | ------ | -------- | ----------- |
@@ -396,6 +399,7 @@ the tests run.
 | `with-playwright` | no | `false` | Cache + install Playwright Chromium before tests |
 | `test-command` | no | `vitest run --coverage` | Local binary + args (run via `yarn`/`npx`), **not** a script name. For jest/mocha pass e.g. `jest --coverage` |
 | `package-manager` | no | `auto` | `auto` / `yarn` / `npm` |
+| `legacy-peer-deps` | no | `false` | `npm ci --legacy-peer-deps` (npm only) |
 | `with-postgres` | no | `false` | Start a throwaway Postgres for DB suites that don't use Testcontainers; exposes `DATABASE_URL=postgres://ci:ci@localhost:5432/ci` |
 | `postgres-version` | no | `16-alpine` | Postgres image tag when `with-postgres` is true |
 
@@ -429,6 +433,7 @@ via `actions/download-artifact` instead of rebuilding.
 | `build-script` | no | `build` | package.json script that produces the artifact (`yarn <s>` / `npm run <s>`) |
 | `with-storybook` | no | `false` | Also run the `build:storybook` script |
 | `package-manager` | no | `auto` | `auto` / `yarn` / `npm` |
+| `legacy-peer-deps` | no | `false` | `npm ci --legacy-peer-deps` (npm only) |
 | `upload-artifact` | no | `true` | Upload `artifact-path` as a workflow artifact |
 | `artifact-name` | no | `dist` | Artifact name (consumer can interpolate `${{ github.event.pull_request.head.sha }}` for traceability) |
 | `artifact-path` | no | `dist/` | Path uploaded |
