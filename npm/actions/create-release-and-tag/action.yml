@@ -23,7 +23,7 @@ inputs:
     required: false
     default: ${{ github.sha }}
   body:
-    description: Release body. Ignored when `generate-release-notes: true`.
+    description: 'Release body. Ignored when `generate-release-notes: true`.'
     required: false
     default: ''
   generate-release-notes:
