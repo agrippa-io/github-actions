@@ -73,8 +73,8 @@ jobs:
             reason="major update"
           fi
           IFS=',' read -ra review <<< "$REQUIRE_REVIEW"
-          IFS=',' read -ra deps <<< "$DEPS"
-          for d in "${deps[@]}"; do
+          IFS=, read -ra dep_list <<< "$DEPS"
+          for d in "${dep_list[@]}"; do
             d="$(echo "$d" | xargs)"
             for r in "${review[@]}"; do
               r="$(echo "$r" | xargs)"
