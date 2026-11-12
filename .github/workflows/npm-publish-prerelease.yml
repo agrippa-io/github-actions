@@ -68,7 +68,7 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
 
-      - uses: agrippa-io/github-actions/npm/actions/setup-yarn-project@v1
+      - uses: agrippa-io/github-actions/npm/actions/setup-node-project@v1
         with:
           npm-scope: ${{ inputs.npm-scope }}
           node-version-file: ${{ inputs.node-version-file }}
