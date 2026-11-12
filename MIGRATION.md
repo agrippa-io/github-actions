@@ -413,6 +413,46 @@ jobs:
 
 ---
 
+## Staged publishing (npm, 2026+)
+
+npm now pushes CI toward **staging**: CI uploads the version, and a maintainer
+approves it with 2FA before it becomes installable. Granular tokens lose direct
+publishing in **January 2027**, and staging needs no 2FA from CI
+([npm docs](https://docs.npmjs.com/staged-publishing)). Both publish workflows
+take `mode`:
+
+| `mode` | Runs | Token needed |
+|---|---|---|
+| `publish` (default) | `npm publish` | granular token with "Bypass 2FA" (until Jan 2027) |
+| `stage` | `npm stage publish` (installs npm `>= 11.15.0` first; override with `npm-version`) | granular token, **"Read and write (stage only)"** is enough |
+
+```yaml
+publish-prod:
+  uses: agrippa-io/github-actions/.github/workflows/npm-publish-latest.yml@v1
+  with: { npm-scope: '@agrippa-io', access: restricted, mode: stage }
+  secrets: { npm-token: '${{ secrets.NPM_TOKEN }}' }
+```
+
+After a stage run, the job summary prints the next step. A maintainer approves
+the version, which publishes it with the dist-tag it was staged under:
+
+```bash
+npm stage list @agrippa-io/<pkg>        # find the stage id
+npm stage approve <stage-id>            # 2FA; the version goes live
+npm stage reject <stage-id>             # or discard it
+```
+
+You can also approve on npmjs.com under **Staged Packages**, in batches of up
+to 100. Points to know:
+
+- A staged version's dist-tag is fixed. To change it, reject and re-stage.
+- A staged version takes its semver slot, so it can't be staged twice.
+- The first stage of a brand-new package creates a placeholder `0.0.0-stage` version.
+- `npm-publish-latest` still creates the `vX.Y.Z` tag and GitHub release at stage
+  time, so they can exist before the npm version is approved.
+- Dependabot only sees **approved** versions, so library updates reach services
+  after approval.
+
 ## Consuming private `@agrippa-io` libraries (Dependabot cascade)
 
 For repos that depend on the shared service libraries (shared-libs-1). When a
