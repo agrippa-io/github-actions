@@ -413,6 +413,68 @@ jobs:
 
 ---
 
+## Consuming private `@agrippa-io` libraries (Dependabot cascade)
+
+For repos that depend on the shared service libraries (shared-libs-1). When a
+library releases, Dependabot opens a lockfile PR in each consumer, CI runs, and
+patch/minor updates merge themselves once `ci-ok` is green.
+
+### `.github/dependabot.yml`
+
+```yaml
+version: 2
+registries:
+  npm-agrippa:
+    type: npm-registry
+    url: https://registry.npmjs.org
+    token: ${{ secrets.NPM_TOKEN }}   # org *Dependabot* secret
+    replaces-base: true
+updates:
+  - package-ecosystem: npm
+    directory: /
+    target-branch: develop
+    registries: [npm-agrippa]
+    schedule: { interval: daily }
+    allow:
+      - dependency-name: '@agrippa-io/*'
+    groups:
+      agrippa:
+        patterns: ['@agrippa-io/*']
+    commit-message: { prefix: deps }
+```
+
+### `.github/workflows/dependabot-automerge.yml`
+
+```yaml
+name: dependabot-automerge
+on: pull_request
+permissions: { contents: write, pull-requests: write }
+jobs:
+  automerge:
+    if: github.actor == 'dependabot[bot]'
+    uses: agrippa-io/github-actions/.github/workflows/dependabot-automerge.yml@v1
+```
+
+Policy (inputs to override): patch + minor auto-merge; majors need a human
+(`allow-major: false`); `@agrippa-io/node-authz-client` and
+`@agrippa-io/platform-contracts` always need a human (`require-review`); merge
+commits (`merge-method: merge`).
+
+### Prerequisites
+
+- **Org Dependabot secret `NPM_TOKEN`.** Dependabot runs see Dependabot secrets
+  only, not Actions secrets. The same secret lets the consumer's `ci.yml` install
+  private packages on Dependabot PRs.
+- **Repo setting "Allow auto-merge"** (Settings → General).
+- **Docker builds** mount the token as a BuildKit secret, never as a build arg:
+  ```dockerfile
+  RUN --mount=type=secret,id=npm_token \
+      if [ -s /run/secrets/npm_token ]; then \
+        echo "//registry.npmjs.org/:_authToken=$(cat /run/secrets/npm_token)" > .npmrc; \
+      fi && npm ci && rm -f .npmrc
+  ```
+  `docker-publish-ecr.yml` already passes `buildkit-secret-value: ${{ secrets.NPM_TOKEN }}`.
+
 ## Migrating an existing repo
 
 For repos that already have workflows:

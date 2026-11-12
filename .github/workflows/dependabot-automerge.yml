@@ -1,0 +1,98 @@
+name: dependabot-automerge
+
+# Reusable workflow: queue GitHub auto-merge on a Dependabot PR when the update
+# is low-risk, so a shared-library release reaches every consumer without a
+# human PR per repo (shared-libs-1 / SL-0).
+#
+# Policy:
+#   - patch + minor updates          → auto-merge once required checks (ci-ok) pass
+#   - major updates                  → left for a human (unless allow-major)
+#   - any dependency in `require-review` → left for a human, whatever the bump
+#
+# Auto-merge only *queues* the merge; GitHub still waits for the branch ruleset
+# (the `ci-ok` check). A red CI run therefore never merges.
+#
+# Caller (in the consumer repo, e.g. .github/workflows/dependabot-automerge.yml):
+#
+#   name: dependabot-automerge
+#   on: pull_request
+#   permissions: { contents: write, pull-requests: write }
+#   jobs:
+#     automerge:
+#       if: github.actor == 'dependabot[bot]'
+#       uses: agrippa-io/github-actions/.github/workflows/dependabot-automerge.yml@v1
+#
+# Requirements: "Allow auto-merge" enabled in the repo settings. Dependabot-run
+# workflows only see *Dependabot* secrets; the GITHUB_TOKEN here gets the
+# permissions granted by the caller.
+
+on:
+  workflow_call:
+    inputs:
+      merge-method:
+        description: 'merge | squash | rebase'
+        required: false
+        type: string
+        default: merge
+      allow-major:
+        description: Also auto-merge semver-major updates.
+        required: false
+        type: boolean
+        default: false
+      require-review:
+        description: Comma-separated dependency names that always need a human review.
+        required: false
+        type: string
+        default: '@agrippa-io/node-authz-client,@agrippa-io/platform-contracts'
+
+jobs:
+  automerge:
+    name: Queue auto-merge for low-risk Dependabot updates
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - id: meta
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Decide
+        id: decide
+        env:
+          UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+          DEPS: ${{ steps.meta.outputs.dependency-names }}
+          ALLOW_MAJOR: ${{ inputs.allow-major }}
+          REQUIRE_REVIEW: ${{ inputs.require-review }}
+        run: |
+          set -euo pipefail
+          reason=""
+          if [ "$UPDATE_TYPE" = "version-update:semver-major" ] && [ "$ALLOW_MAJOR" != "true" ]; then
+            reason="major update"
+          fi
+          IFS=',' read -ra review <<< "$REQUIRE_REVIEW"
+          IFS=, read -ra dep_list <<< "$DEPS"
+          for d in "${dep_list[@]}"; do
+            d="$(echo "$d" | xargs)"
+            for r in "${review[@]}"; do
+              r="$(echo "$r" | xargs)"
+              if [ -n "$r" ] && [ "$d" = "$r" ]; then reason="${reason:+$reason; }$d requires review"; fi
+            done
+          done
+          if [ -n "$reason" ]; then
+            echo "Not auto-merging: $reason"
+            echo "merge=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Auto-merging $DEPS ($UPDATE_TYPE)"
+            echo "merge=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Queue auto-merge
+        if: steps.decide.outputs.merge == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          METHOD: ${{ inputs.merge-method }}
+        run: gh pr merge --auto "--$METHOD" "$PR_URL"
