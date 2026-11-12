@@ -43,6 +43,21 @@ on:
         required: false
         type: string
         default: restricted
+      mode:
+        description: >-
+          `publish` runs `npm publish` (the token must be allowed to publish
+          directly; granular tokens lose that in January 2027). `stage` runs
+          `npm stage publish`: the version waits on npm until a maintainer
+          approves it with 2FA (`npm stage approve <id>` or npmjs.com → Staged
+          Packages). Staging works with a "Read and write (stage only)" token.
+        required: false
+        type: string
+        default: publish
+      npm-version:
+        description: 'npm CLI installed before staging (`npm stage` needs >= 11.15.0; Node 24 bundles 11.12).'
+        required: false
+        type: string
+        default: '^11.15.0'
       ref:
         description: 'Optional explicit ref to check out (e.g. the PR head SHA for canary publishes). Defaults to the workflow''s triggering ref.'
         required: false
@@ -80,7 +95,50 @@ jobs:
         with:
           suffix: ${{ inputs.version-suffix }}
 
+      - name: Check mode
+        shell: bash
+        env:
+          MODE: ${{ inputs.mode }}
+        run: |
+          case "$MODE" in
+            publish|stage) ;;
+            *) echo "::error::mode must be 'publish' or 'stage' (got '$MODE')"; exit 1 ;;
+          esac
+
       - name: 'Publish to npm (dist-tag: ${{ inputs.dist-tag }})'
+        if: inputs.mode == 'publish'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.npm-token }}
         run: npm publish --tag ${{ inputs.dist-tag }} --access ${{ inputs.access }}
+
+      - name: Install an npm CLI with `npm stage`
+        if: inputs.mode == 'stage'
+        shell: bash
+        env:
+          NPM_VERSION: ${{ inputs.npm-version }}
+        run: npm install -g "npm@$NPM_VERSION" && npm --version
+
+      - name: 'Stage on npm (dist-tag: ${{ inputs.dist-tag }})'
+        if: inputs.mode == 'stage'
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.npm-token }}
+          TAG: ${{ inputs.dist-tag }}
+          ACCESS: ${{ inputs.access }}
+        run: |
+          set -euo pipefail
+          npm stage publish --tag "$TAG" --access "$ACCESS"
+          NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          {
+            echo "### Staged \`$NAME@$VERSION\` (dist-tag \`$TAG\`)"
+            echo
+            echo "Not installable until a maintainer approves it with 2FA:"
+            echo
+            echo '```bash'
+            echo "npm stage list $NAME          # find the stage id"
+            echo "npm stage approve <stage-id>  # publishes it"
+            echo '```'
+            echo
+            echo "Or npmjs.com → Staged Packages. \`npm stage reject <stage-id>\` discards it."
+          } >> "$GITHUB_STEP_SUMMARY"
