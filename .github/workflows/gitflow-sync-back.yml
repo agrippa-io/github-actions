@@ -2,7 +2,9 @@ name: gitflow-sync-back
 
 # Reusable workflow: after a release lands on the release line (default
 # `main`), open a back-merge PR to the integration line (default `develop`)
-# so the version bump and any stabilization fixes flow downstream.
+# so the version bump and any stabilization fixes flow downstream. By default
+# the PR is approved and auto-merged once required checks pass — see the
+# `auto-merge` input.
 #
 # Generic gitflow concern — not npm-specific. The `from`/`to` defaults
 # match the gitflow convention but can be overridden.
@@ -30,9 +32,14 @@ on:
         required: false
         type: string
         default: sync
+      auto-merge:
+        description: 'Approve the back-merge PR and enable auto-merge so it lands on `to` with no manual step. Needs "Allow auto-merge" enabled in the consumer repo.'
+        required: false
+        type: boolean
+        default: true
     secrets:
       release-token:
-        description: 'PAT with `Contents: read and write`. Pushes from this token trigger downstream workflows on the sync branch.'
+        description: 'PAT with `Contents: write` and `Pull requests: write`. Pushes the sync branch, opens the PR (so the target branch CI fires), and enables auto-merge.'
         required: true
 
 jobs:
@@ -89,10 +96,14 @@ jobs:
           git checkout -b "$BRANCH"
           git push -u origin "$BRANCH"
 
-      - name: Open back-merge PR
+      - id: pr
+        name: Open back-merge PR
         if: steps.diff.outputs.ahead != '0' && steps.branch.outputs.skip != 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          # Open with the PAT, not GITHUB_TOKEN: a PR opened by GITHUB_TOKEN
+          # does not fire `pull_request`, so the target branch's required
+          # checks would never run and auto-merge would wait forever.
+          GH_TOKEN: ${{ secrets.release-token }}
         run: |
           BRANCH="${{ steps.branch.outputs.branch }}"
           VERSION="${{ steps.branch.outputs.version }}"
@@ -102,21 +113,35 @@ jobs:
           Automatic back-merge of \`$FROM\` into \`$TO\` after publishing
           **v${VERSION}**.
 
-          Per gitflow, every commit on \`$FROM\` must flow back to \`$TO\`
-          so the version bump and any release fixes reach the integration
-          branch.
-
-          ## Merging
-
-          Review the diff, resolve any conflicts on \`$BRANCH\`, then merge.
+          Per gitflow, every commit on \`$FROM\` must flow back to \`$TO\` so
+          the version bump and any release fixes reach the integration branch.
+          Approved and set to auto-merge once required checks pass — only act
+          if it reports merge conflicts (resolve them on \`$BRANCH\`).
           EOF
           )
 
-          gh pr create \
+          URL=$(gh pr create \
             --base "$TO" \
             --head "$BRANCH" \
             --title "chore(sync): back-merge ${FROM} → ${TO} (v${VERSION})" \
-            --body "$BODY"
+            --body "$BODY")
+          echo "Opened $URL"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Approve the back-merge PR
+        if: steps.pr.outputs.url != '' && inputs.auto-merge
+        env:
+          # GITHUB_TOKEN reviews as github-actions[bot] — a different identity
+          # from the PAT user that authored the PR, so this is not a
+          # self-approval (which GitHub rejects).
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr review "${{ steps.pr.outputs.url }}" --approve --body "Automated gitflow back-merge."
+
+      - name: Enable auto-merge
+        if: steps.pr.outputs.url != '' && inputs.auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.release-token }}
+        run: gh pr merge "${{ steps.pr.outputs.url }}" --auto --merge --delete-branch
 
       - name: No-op summary
         if: steps.diff.outputs.ahead == '0'
