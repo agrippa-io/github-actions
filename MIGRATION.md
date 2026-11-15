@@ -475,6 +475,11 @@ updates:
     target-branch: develop
     registries: [npm-agrippa]
     schedule: { interval: daily }
+    # Dependabot's default release-age cooldown would hold back our own
+    # releases for days; they are already 2FA-approved on npm, so skip it.
+    cooldown:
+      default-days: 3
+      exclude: ['@agrippa-io/*']
     allow:
       - dependency-name: '@agrippa-io/*'
     groups:
