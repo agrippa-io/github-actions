@@ -696,10 +696,18 @@ workflow skips creation rather than opening a duplicate.
 | `to` | no | `develop` | Target integration branch |
 | `version` | no | `package.json#version` on `from` | Label embedded in the sync branch + PR title |
 | `branch-prefix` | no | `sync` | Prefix for the sync branch |
+| `auto-merge` | no | `true` | Approve the back-merge PR and enable auto-merge (merge commit, sync branch deleted) so it lands once required checks pass. Set `false` to leave it for a manual merge |
 
 | Secret | Required | Description |
 | ------ | -------- | ----------- |
-| `release-token` | **yes** | PAT with `Contents: read and write` |
+| `release-token` | **yes** | PAT with `Contents: write` and `Pull requests: write` — pushes the sync branch, opens the PR (so the target branch's checks fire), and enables auto-merge |
+
+With `auto-merge: true` (the default) the consumer repo needs two settings:
+
+- **Settings → General → Allow auto-merge** — otherwise enabling auto-merge fails.
+- **Settings → Actions → General → Allow GitHub Actions to create and approve pull requests** — the approval is posted by `github-actions[bot]` via `GITHUB_TOKEN`. It's a different identity from the PAT user that opens the PR, so it isn't a self-approval.
+
+The PR is opened with the PAT, not `GITHUB_TOKEN`, on purpose: a PR opened by `GITHUB_TOKEN` doesn't trigger `pull_request` workflows, so the target branch's required checks would never run and auto-merge would wait forever. You only need to step in if the PR reports merge conflicts; resolve them on the sync branch.
 
 ```yaml
 sync-develop:
