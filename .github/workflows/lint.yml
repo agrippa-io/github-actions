@@ -28,7 +28,7 @@ concurrency:
 jobs:
   yaml-syntax:
     name: YAML syntax
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -51,7 +51,7 @@ jobs:
 
   actionlint:
     name: actionlint (advisory)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNNER || 'ubuntu-latest' }}
     # Advisory: actionlint surfaces workflow-semantic issues (expression typos,
     # bad contexts, shellcheck findings in `run:` blocks) that the syntax parse
     # can't see, but it only covers .github/workflows — not the npm/ and aws/

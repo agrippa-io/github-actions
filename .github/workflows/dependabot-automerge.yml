@@ -49,7 +49,7 @@ jobs:
   automerge:
     name: Queue auto-merge for low-risk Dependabot updates
     if: github.actor == 'dependabot[bot]'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: write
       pull-requests: write
