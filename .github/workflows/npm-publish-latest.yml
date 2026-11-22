@@ -72,7 +72,7 @@ on:
 jobs:
   publish:
     name: Publish latest to npm
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: write    # required by create-release-and-tag
       id-token: write    # reserved for npm OIDC / consumer AWS OIDC chained from this workflow

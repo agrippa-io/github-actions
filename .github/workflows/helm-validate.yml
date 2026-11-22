@@ -20,7 +20,7 @@ on:
 jobs:
   helm-validate:
     name: helm lint + template
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
 
