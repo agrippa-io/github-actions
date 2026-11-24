@@ -12,7 +12,7 @@ Add a job to `.github/workflows/ci.yml` and put it in the `ci-ok` gate:
 ```yaml
 jobs:
   gitleaks:
-    uses: agrippa-io/github-actions/.github/workflows/gitleaks.yml@v1
+    uses: agrippa-io/github-actions/.github/workflows/gitleaks.yml@v1.9.1   # exact pin for a security gate
 
   ci-ok:
     needs: [lint, test, build, gitleaks]   # ...and check needs.gitleaks.result

@@ -6,7 +6,7 @@ name: gitleaks
 # `ci-ok` gate's `needs`:
 #
 #   gitleaks:
-#     uses: agrippa-io/github-actions/.github/workflows/gitleaks.yml@v1
+#     uses: agrippa-io/github-actions/.github/workflows/gitleaks.yml@v1.9.1
 #
 # Only the new commits are scanned, so secrets already in history don't block
 # every PR (track and rotate those separately). See security/README.md.
@@ -42,7 +42,9 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: agrippa-io/github-actions/security/actions/gitleaks@v1
+      # Exact pin: the action is a security control, so a moving tag must not
+      # change what scans every repo. Bump with each gitleaks release.
+      - uses: agrippa-io/github-actions/security/actions/gitleaks@v1.9.0
         with:
           version: ${{ inputs.gitleaks-version }}
           log-opts: ${{ inputs.log-opts }}
