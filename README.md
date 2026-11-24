@@ -16,6 +16,7 @@ github-actions/
 │   │   └── create-release-and-tag/
 │   └── README.md     # Action-by-action reference + usage examples
 ├── aws/              # (Reserved) AWS/ECR/IAM-related actions and jobs
+├── security/         # Secret scanning (gitleaks) — see security/README.md
 └── .github/
     └── workflows/    # Internal CI for this repo + reusable workflows for consumers
 ```

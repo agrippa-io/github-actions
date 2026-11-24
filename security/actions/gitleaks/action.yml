@@ -1,0 +1,117 @@
+name: gitleaks
+description: >-
+  Install a pinned, checksum-verified gitleaks binary and scan the commits
+  this run introduces (the pull request's or push's commit range) for
+  secrets. Needs a full-history checkout (actions/checkout with
+  fetch-depth 0). Honours the repo's .gitleaks.toml and .gitleaksignore.
+
+inputs:
+  version:
+    description: gitleaks release to install (without the leading v).
+    required: false
+    default: 8.30.1
+  sha256-linux-x64:
+    description: SHA-256 of gitleaks_<version>_linux_x64.tar.gz. Update together with version.
+    required: false
+    default: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+  sha256-linux-arm64:
+    description: SHA-256 of gitleaks_<version>_linux_arm64.tar.gz. Update together with version.
+    required: false
+    default: e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080
+  log-opts:
+    description: >-
+      Override the git log range to scan (passed to gitleaks --log-opts).
+      Empty = derive it from the event. Use "--all" for a full-history scan.
+    required: false
+    default: ''
+  config:
+    description: Path to a gitleaks config. Empty = gitleaks default rules plus the repo's .gitleaks.toml if present.
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Install gitleaks ${{ inputs.version }}
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        SHA_X64: ${{ inputs.sha256-linux-x64 }}
+        SHA_ARM64: ${{ inputs.sha256-linux-arm64 }}
+      run: |
+        set -euo pipefail
+        case "${RUNNER_OS}/${RUNNER_ARCH}" in
+          Linux/X64) arch=x64; sha="$SHA_X64" ;;
+          Linux/ARM64) arch=arm64; sha="$SHA_ARM64" ;;
+          *) echo "::error::gitleaks action supports Linux X64/ARM64 runners only (got ${RUNNER_OS}/${RUNNER_ARCH})"; exit 1 ;;
+        esac
+        tarball="gitleaks_${VERSION}_linux_${arch}.tar.gz"
+        dir="${RUNNER_TEMP}/gitleaks-${VERSION}"
+        mkdir -p "$dir"
+        curl -fsSL --retry 3 -o "$dir/$tarball" \
+          "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/${tarball}"
+        echo "${sha}  $dir/$tarball" | sha256sum -c -
+        tar -xzf "$dir/$tarball" -C "$dir" gitleaks
+        echo "$dir" >> "$GITHUB_PATH"
+        "$dir/gitleaks" version
+
+    - name: Scan the commit range for secrets
+      shell: bash
+      env:
+        LOG_OPTS: ${{ inputs.log-opts }}
+        CONFIG: ${{ inputs.config }}
+        EVENT: ${{ github.event_name }}
+        PR_BASE: ${{ github.event.pull_request.base.sha }}
+        PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        MG_BASE: ${{ github.event.merge_group.base_sha }}
+        MG_HEAD: ${{ github.event.merge_group.head_sha }}
+        PUSH_BEFORE: ${{ github.event.before }}
+        PUSH_AFTER: ${{ github.event.after }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      run: |
+        set -euo pipefail
+        zero=0000000000000000000000000000000000000000
+        has() { [ -n "$1" ] && [ "$1" != "$zero" ] && git cat-file -e "$1^{commit}" 2>/dev/null; }
+        if [ -n "$LOG_OPTS" ]; then
+          opts="$LOG_OPTS"
+        else
+          case "$EVENT" in
+            pull_request|pull_request_target) opts="${PR_BASE}..${PR_HEAD}" ;;
+            merge_group) opts="${MG_BASE}..${MG_HEAD}" ;;
+            push)
+              if [ -z "$PUSH_AFTER" ] || [ "$PUSH_AFTER" = "$zero" ]; then
+                echo "Branch deletion: nothing to scan."; exit 0
+              elif has "$PUSH_BEFORE"; then
+                opts="${PUSH_BEFORE}..${PUSH_AFTER}"
+              elif [ -n "$DEFAULT_BRANCH" ] && git rev-parse -q --verify "origin/${DEFAULT_BRANCH}" >/dev/null; then
+                opts="origin/${DEFAULT_BRANCH}..${PUSH_AFTER}"
+              else
+                opts="-1 ${PUSH_AFTER}"
+              fi ;;
+            *) opts="--all" ;;
+          esac
+        fi
+        if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+          echo "::error::gitleaks needs full history: use actions/checkout with fetch-depth: 0"; exit 1
+        fi
+        echo "Scanning: git log ${opts}"
+        args=(git . --redact --no-banner --log-opts="$opts" --report-format json --report-path "${RUNNER_TEMP}/gitleaks.json")
+        [ -n "$CONFIG" ] && args+=(--config "$CONFIG")
+        status=0
+        gitleaks "${args[@]}" || status=$?
+        if [ "$status" -ne 0 ]; then
+          if [ -s "${RUNNER_TEMP}/gitleaks.json" ]; then
+            {
+              echo "### gitleaks: secrets found in this change"
+              echo
+              echo "| Rule | File:line | Commit |"
+              echo "|---|---|---|"
+              jq -r '.[] | "| \(.RuleID) | \(.File):\(.StartLine) | \(.Commit[0:12]) |"' "${RUNNER_TEMP}/gitleaks.json"
+              echo
+              echo "Remove the secret and rotate it. A verified false positive goes in .gitleaksignore (its Fingerprint) — see agrippa-io/github-actions security/README.md."
+            } >> "$GITHUB_STEP_SUMMARY"
+            jq -r '.[] | "::error file=\(.File),line=\(.StartLine)::gitleaks \(.RuleID) in commit \(.Commit[0:12]) (fingerprint \(.Fingerprint))"' "${RUNNER_TEMP}/gitleaks.json"
+          fi
+          exit "$status"
+        fi
+        echo "No secrets found."
