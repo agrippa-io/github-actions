@@ -1,0 +1,80 @@
+name: image-build-selftest
+
+# Exercises the reusable image-build workflow end to end on every change to it:
+# multi-arch build, Trivy scan, push to GHCR, cosign keyless sign + verify, and
+# the dispatch step's no-token path. Then checks the pushed index from outside.
+#
+# Pushes ghcr.io/agrippa-io/github-actions-image-build-selftest:pr-<n> /
+# sha-<7>. Pull requests from forks only build and scan (no packages / OIDC
+# permission there).
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/image-build.yml
+      - .github/workflows/image-build-selftest.yml
+      - test/fixtures/image-build/**
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/image-build.yml
+      - .github/workflows/image-build-selftest.yml
+      - test/fixtures/image-build/**
+  workflow_dispatch:
+
+concurrency:
+  group: image-build-selftest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    uses: ./.github/workflows/image-build.yml
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    with:
+      image-name: github-actions-image-build-selftest
+      context: test/fixtures/image-build
+      push: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+      tag: ${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.number) || '' }}
+      # Exercises the dispatch step without a token: it must log a notice and pass.
+      workload: selftest
+
+  check:
+    name: check the pushed image
+    needs: image
+    if: needs.image.outputs.ref != ''
+    runs-on: ${{ vars.RUNNER || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - uses: sigstore/cosign-installer@v4
+      - name: Index has amd64 + arm64, digest matches, signature verifies
+        env:
+          REF: ${{ needs.image.outputs.ref }}
+          IMAGE: ${{ needs.image.outputs.image }}
+          TAG: ${{ needs.image.outputs.tag }}
+          DIGEST: ${{ needs.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          echo "ref=$REF"
+          case "$DIGEST" in sha256:????????????????????????????????????????????????????????????????) ;; *) echo "bad digest: $DIGEST"; exit 1 ;; esac
+          [ "$REF" = "$IMAGE@$DIGEST" ] || { echo "ref is not image@digest"; exit 1; }
+          platforms="$(docker buildx imagetools inspect "$REF" --format '{{json .Manifest}}' | jq -r '.manifests[] | .platform | "\(.os)/\(.architecture)"' | sort -u)"
+          echo "$platforms"
+          grep -qx linux/amd64 <<< "$platforms"
+          grep -qx linux/arm64 <<< "$platforms"
+          tag_digest="$(docker buildx imagetools inspect "$IMAGE:$TAG" --format '{{json .Manifest}}' | jq -r .digest)"
+          [ "$tag_digest" = "$DIGEST" ] || { echo "tag $TAG points at $tag_digest, not $DIGEST"; exit 1; }
+          cosign verify "$REF" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity-regexp '^https://github\.com/agrippa-io/github-actions/\.github/workflows/image-build\.yml@' \
+            --output text > /dev/null
+          echo "ok: $REF"

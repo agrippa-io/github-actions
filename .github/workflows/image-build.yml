@@ -1,0 +1,338 @@
+name: image-build
+
+# Reusable workflow: the one way an Agrippa service or app builds its image
+# (deployment-e2e-cloud-1, DC-3 item 3.4).
+#
+#   1. Build the image for linux/amd64 and scan it with Trivy. A finding at
+#      `scan-severity` (default CRITICAL, fixable only) fails the job before
+#      anything is pushed.
+#   2. Build every platform in `platforms` (default amd64 + arm64, so the same
+#      image runs on Graviton nodes) and push it to GHCR. The layers come from
+#      the scan build's cache, so this is mostly the arm64 half.
+#   3. Sign the pushed digest with cosign, keyless: the certificate is minted
+#      from this run's GitHub OIDC token and logged in Rekor, so there is no
+#      signing key to store or rotate. The signature is verified right away.
+#   4. Dispatch `image-built` to agrippa-stack, whose `gitops-bump` workflow
+#      pins the digest in deploy/envs/e2e/images.yaml by pull request. Without
+#      a `dispatch-token` (or a `workload`) this step only logs a notice.
+#
+# Consumers deploy by digest (`outputs.ref`, `<image>@sha256:…`), never by tag.
+# The tag (default `sha-<7>`) is there for people reading the registry.
+#
+# Caller (in a service repo, e.g. .github/workflows/image.yml):
+#
+#   name: image
+#   on:
+#     push: { branches: [develop] }
+#     pull_request:
+#   jobs:
+#     image:
+#       uses: agrippa-io/github-actions/.github/workflows/image-build.yml@v1
+#       permissions:
+#         contents: read
+#         packages: write   # push to ghcr.io
+#         id-token: write   # cosign keyless signature
+#       with:
+#         push: ${{ github.event_name == 'push' }}
+#         workload: gateway  # registry.json name in agrippa-stack
+#       secrets:
+#         dispatch-token: ${{ secrets.GITOPS_DISPATCH_TOKEN }}
+#
+# Verify a signature (what the 3.6 admission policy checks):
+#
+#   cosign verify ghcr.io/agrippa-io/<image>@sha256:… \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+#     --certificate-identity-regexp '^https://github\.com/agrippa-io/github-actions/\.github/workflows/image-build\.yml@'
+
+on:
+  workflow_call:
+    inputs:
+      image-name:
+        description: 'Image name under the registry owner (default: the calling repository name).'
+        required: false
+        type: string
+        default: ''
+      registry:
+        description: Registry host.
+        required: false
+        type: string
+        default: ghcr.io
+      registry-owner:
+        description: 'Namespace in the registry (default: the calling repository owner).'
+        required: false
+        type: string
+        default: ''
+      context:
+        description: Docker build context path.
+        required: false
+        type: string
+        default: '.'
+      dockerfile:
+        description: Path to the Dockerfile relative to context.
+        required: false
+        type: string
+        default: Dockerfile
+      platforms:
+        description: Comma-separated platforms to build and push.
+        required: false
+        type: string
+        default: linux/amd64,linux/arm64
+      tag:
+        description: 'Image tag to push alongside the digest (default: `sha-<7-char commit>`).'
+        required: false
+        type: string
+        default: ''
+      extra-tags:
+        description: 'More tags to push, one per line (e.g. a release version). Never `latest` for deploys: deploys pin the digest.'
+        required: false
+        type: string
+        default: ''
+      build-args:
+        description: 'Build arguments, one `KEY=value` per line.'
+        required: false
+        type: string
+        default: ''
+      buildkit-secret-name:
+        description: 'Name of a BuildKit secret (`RUN --mount=type=secret,id=<name>`) fed from the `buildkit-secret-value` secret. Empty means no secret mount.'
+        required: false
+        type: string
+        default: ''
+      push:
+        description: 'Push, sign and dispatch. False (e.g. on pull requests) builds and scans only.'
+        required: false
+        type: boolean
+        default: true
+      scan-severity:
+        description: Trivy severities that fail the build (comma-separated).
+        required: false
+        type: string
+        default: CRITICAL
+      scan-ignore-unfixed:
+        description: Ignore findings that have no fixed version yet.
+        required: false
+        type: boolean
+        default: true
+      trivyignores:
+        description: 'Path to a .trivyignore file in the calling repository (accepted CVEs, each with a reason).'
+        required: false
+        type: string
+        default: ''
+      verify-identity-regexp:
+        description: Certificate identity the fresh signature must match.
+        required: false
+        type: string
+        default: '^https://github\.com/agrippa-io/github-actions/\.github/workflows/image-build\.yml@'
+      workload:
+        description: 'Workload name in agrippa-stack deploy/registry (e.g. `gateway`). Empty skips the dispatch.'
+        required: false
+        type: string
+        default: ''
+      dispatch-repository:
+        description: Repository that receives the `image-built` repository_dispatch.
+        required: false
+        type: string
+        default: agrippa-io/agrippa-stack
+      dispatch-event:
+        description: repository_dispatch event type.
+        required: false
+        type: string
+        default: image-built
+    secrets:
+      buildkit-secret-value:
+        description: 'Value of the BuildKit secret (typically an npm token). Required when `buildkit-secret-name` is set.'
+        required: false
+      dispatch-token:
+        description: 'Token allowed to dispatch to `dispatch-repository` (contents write there). Absent → the dispatch is skipped.'
+        required: false
+    outputs:
+      image:
+        description: 'Image repository, e.g. `ghcr.io/agrippa-io/node-service-gateway`.'
+        value: ${{ jobs.build.outputs.image }}
+      tag:
+        description: Tag pushed with the image.
+        value: ${{ jobs.build.outputs.tag }}
+      digest:
+        description: 'Manifest digest (`sha256:…`). Empty when `push` is false.'
+        value: ${{ jobs.build.outputs.digest }}
+      ref:
+        description: 'Image pinned by digest (`<image>@sha256:…`). Empty when `push` is false.'
+        value: ${{ jobs.build.outputs.ref }}
+
+jobs:
+  build:
+    name: build, scan, push, sign
+    runs-on: ${{ vars.RUNNER || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      tag: ${{ steps.meta.outputs.tag }}
+      digest: ${{ steps.push.outputs.digest }}
+      ref: ${{ steps.push.outputs.digest && format('{0}@{1}', steps.meta.outputs.image, steps.push.outputs.digest) || '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Image name and tags
+        id: meta
+        env:
+          REGISTRY: ${{ inputs.registry }}
+          OWNER: ${{ inputs.registry-owner || github.repository_owner }}
+          NAME: ${{ inputs.image-name || github.event.repository.name }}
+          TAG: ${{ inputs.tag }}
+          EXTRA_TAGS: ${{ inputs.extra-tags }}
+        run: |
+          set -euo pipefail
+          # Registries want lowercase repository names; GitHub owners may not be.
+          image="$(printf '%s/%s/%s' "$REGISTRY" "$OWNER" "$NAME" | tr '[:upper:]' '[:lower:]')"
+          tag="${TAG:-sha-${GITHUB_SHA::7}}"
+          tags="$image:$tag"
+          while IFS= read -r extra; do
+            extra="$(echo "$extra" | xargs)"
+            if [ -n "$extra" ]; then tags="$tags"$'\n'"$image:$extra"; fi
+          done <<< "$EXTRA_TAGS"
+          {
+            echo "image=$image"
+            echo "tag=$tag"
+            echo "scan-ref=local/$(basename "$image"):scan"
+            echo "cache-scope=$(basename "$image")"
+            echo 'tags<<EOF'
+            echo "$tags"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+          echo "Image: $image"
+          echo "Tags:"
+          echo "$tags"
+
+      - name: Set up QEMU (cross-platform builds)
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to ${{ inputs.registry }}
+        if: inputs.push
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      # 1. Build linux/amd64 into the local daemon and scan it before anything
+      #    is pushed. The arm64 build in step 2 runs the same Dockerfile, so it
+      #    pulls the same packages; the scan covers the amd64 variant.
+      - name: Build for the scan (linux/amd64)
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.context }}/${{ inputs.dockerfile }}
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ${{ steps.meta.outputs.scan-ref }}
+          build-args: ${{ inputs.build-args }}
+          secrets: |
+            ${{ inputs.buildkit-secret-name != '' && format('{0}={1}', inputs.buildkit-secret-name, secrets.buildkit-secret-value) || '' }}
+          cache-from: type=gha,scope=${{ steps.meta.outputs.cache-scope }}
+          cache-to: type=gha,mode=max,scope=${{ steps.meta.outputs.cache-scope }}
+
+      - name: Trivy scan (fails on ${{ inputs.scan-severity }})
+        # Pinned by commit: action tags can be moved (trivy-action v0.36.0).
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          scan-type: image
+          image-ref: ${{ steps.meta.outputs.scan-ref }}
+          severity: ${{ inputs.scan-severity }}
+          ignore-unfixed: ${{ inputs.scan-ignore-unfixed }}
+          trivyignores: ${{ inputs.trivyignores }}
+          vuln-type: os,library
+          format: table
+          exit-code: '1'
+
+      # 2. Multi-arch build and push. The pushed digest is the image index.
+      - name: Build and push (${{ inputs.platforms }})
+        id: push
+        if: inputs.push
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.context }}/${{ inputs.dockerfile }}
+          platforms: ${{ inputs.platforms }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: ${{ inputs.build-args }}
+          secrets: |
+            ${{ inputs.buildkit-secret-name != '' && format('{0}={1}', inputs.buildkit-secret-name, secrets.buildkit-secret-value) || '' }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=${{ steps.meta.outputs.cache-scope }}
+          cache-to: type=gha,mode=max,scope=${{ steps.meta.outputs.cache-scope }}
+
+      # 3. Keyless signature of the digest, verified immediately.
+      - name: Install cosign
+        if: inputs.push
+        uses: sigstore/cosign-installer@v4
+
+      - name: Sign and verify ${{ steps.meta.outputs.image }}
+        if: inputs.push
+        env:
+          REF: ${{ steps.meta.outputs.image }}@${{ steps.push.outputs.digest }}
+          IDENTITY: ${{ inputs.verify-identity-regexp }}
+        run: |
+          set -euo pipefail
+          cosign sign --yes "$REF"
+          cosign verify "$REF" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity-regexp "$IDENTITY" \
+            --output text > /dev/null
+          echo "Signed and verified $REF"
+
+      # 4. Hand the digest to GitOps (agrippa-stack gitops-bump).
+      - name: Dispatch ${{ inputs.dispatch-event }} to ${{ inputs.dispatch-repository }}
+        if: inputs.push && inputs.workload != ''
+        env:
+          GH_TOKEN: ${{ secrets.dispatch-token }}
+          REPO: ${{ inputs.dispatch-repository }}
+          EVENT: ${{ inputs.dispatch-event }}
+          WORKLOAD: ${{ inputs.workload }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          SOURCE: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::notice::No dispatch-token: not dispatching $EVENT for $WORKLOAD ($DIGEST) to $REPO."
+            exit 0
+          fi
+          gh api "repos/$REPO/dispatches" \
+            -f "event_type=$EVENT" \
+            -f "client_payload[workload]=$WORKLOAD" \
+            -f "client_payload[digest]=$DIGEST" \
+            -f "client_payload[tag]=$TAG" \
+            -f "client_payload[source]=$SOURCE"
+          echo "Dispatched $EVENT to $REPO: $WORKLOAD $DIGEST ($TAG)"
+
+      - name: Summary
+        if: always()
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+          PUSHED: ${{ inputs.push }}
+        run: |
+          {
+            echo "### Image"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| image | \`$IMAGE\` |"
+            echo "| tag | \`$TAG\` |"
+            if [ "$PUSHED" = "true" ] && [ -n "$DIGEST" ]; then
+              echo "| digest | \`$DIGEST\` |"
+              echo "| deploy ref | \`$IMAGE@$DIGEST\` |"
+            else
+              echo "| pushed | no (build and scan only) |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

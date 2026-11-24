@@ -17,6 +17,8 @@ github-actions/
 │   └── README.md     # Action-by-action reference + usage examples
 ├── aws/              # (Reserved) AWS/ECR/IAM-related actions and jobs
 ├── security/         # Secret scanning (gitleaks) — see security/README.md
+├── images/           # Container image workflow docs (image-build.yml)
+├── test/fixtures/    # Fixtures for the self-test workflows
 └── .github/
     └── workflows/    # Internal CI for this repo + reusable workflows for consumers
 ```
@@ -63,7 +65,9 @@ so regressions are caught before a tag is cut.
    orchestration, not implementation.
 
 See [`npm/README.md`](./npm/README.md) for the action reference,
-[`aws/README.md`](./aws/README.md) for the Docker/ECR workflows, and
+[`aws/README.md`](./aws/README.md) for the Docker/ECR workflows,
+[`images/README.md`](./images/README.md) for `image-build.yml` (multi-arch
+build, Trivy, cosign, push by digest, GitOps dispatch), and
 [`MIGRATION.md`](./MIGRATION.md) for the per-consumer playbook (how to
 wire ci.yml + release.yml in a new repo by archetype: npm package /
 frontend app / docker-only service).
