@@ -32,7 +32,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Parse every YAML file under .github/, npm/, aws/
+      - name: Parse every YAML file under .github/, npm/, aws/, security/
         run: |
           fail=0
           count=0
@@ -42,7 +42,7 @@ jobs:
               echo "::error file=$f::$err"
               fail=1
             fi
-          done < <(find .github npm aws -type f \( -name '*.yml' -o -name '*.yaml' \) | sort)
+          done < <(find .github npm aws security -type f \( -name '*.yml' -o -name '*.yaml' \) | sort)
           if [ "$fail" -ne 0 ]; then
             echo "One or more YAML files failed to parse (see annotations above)."
             exit 1

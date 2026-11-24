@@ -1,0 +1,37 @@
+name: ci
+
+# Gates for this repo's own PRs. Exposes `ci-ok`, the single check the org
+# ruleset requires on every default branch. The YAML parse / actionlint
+# checks live in lint.yml.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Runs the gitleaks action from this checkout (not @v1), so a change to it
+  # is exercised before it is tagged.
+  gitleaks:
+    name: gitleaks
+    runs-on: ${{ vars.RUNNER || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./security/actions/gitleaks
+
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs: [gitleaks]
+    runs-on: ${{ vars.RUNNER || 'ubuntu-latest' }}
+    steps:
+      - run: '[ "${{ needs.gitleaks.result }}" = "success" ]'

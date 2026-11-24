@@ -1,0 +1,49 @@
+name: gitleaks
+
+# Reusable workflow: scan the commits a pull request / push introduces for
+# secrets with gitleaks (pinned, checksum-verified binary — no gitleaks-action
+# licence needed). Wire it into a consumer's ci.yml as a job and add it to the
+# `ci-ok` gate's `needs`:
+#
+#   gitleaks:
+#     uses: agrippa-io/github-actions/.github/workflows/gitleaks.yml@v1
+#
+# Only the new commits are scanned, so secrets already in history don't block
+# every PR (track and rotate those separately). See security/README.md.
+
+on:
+  workflow_call:
+    inputs:
+      gitleaks-version:
+        description: gitleaks release (without v). Changing it requires the matching sha256 inputs of the action.
+        required: false
+        type: string
+        default: 8.30.1
+      log-opts:
+        description: Override the scanned git log range (e.g. "--all"). Empty = the event's commit range.
+        required: false
+        type: string
+        default: ''
+      config:
+        description: Path to a gitleaks config. Empty = defaults plus the repo's .gitleaks.toml.
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    name: gitleaks
+    runs-on: ${{ vars.RUNNER || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: agrippa-io/github-actions/security/actions/gitleaks@v1
+        with:
+          version: ${{ inputs.gitleaks-version }}
+          log-opts: ${{ inputs.log-opts }}
+          config: ${{ inputs.config }}
