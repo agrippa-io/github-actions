@@ -55,7 +55,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-      - uses: sigstore/cosign-installer@v4
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
       - name: Index has amd64 + arm64, digest matches, signature verifies
         env:
           REF: ${{ needs.image.outputs.ref }}
