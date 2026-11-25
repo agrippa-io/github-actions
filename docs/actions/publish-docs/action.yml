@@ -1,6 +1,7 @@
 name: Publish docs
 description: >
-  Publish a service's, library's or application's spec (OpenAPI today) to the
+  Publish a service's, library's or application's spec (OpenAPI, or a GraphQL
+  SDL file / introspection of a local endpoint) to the
   Agrippa docs platform (node-service-docs, docs-platform-0) with
   PUT /sources/:key/versions/:version. Run it on merge to develop / main.
   200 (same content already published) and 201 (published) both succeed;
@@ -55,9 +56,21 @@ inputs:
     required: false
     default: openapi.json
   format:
-    description: 'Spec format. Only openapi is accepted today.'
+    description: 'Spec format: openapi or graphql. graphql is implied by graphql / graphql-url.'
     required: false
     default: openapi
+  graphql:
+    description: 'Path to a GraphQL SDL file (e.g. schema.graphql), relative to working-directory. Publishes format graphql instead of spec-path.'
+    required: false
+    default: ''
+  graphql-url:
+    description: 'A GraphQL endpoint to introspect instead of an SDL file. Local environment only (localhost, 127.0.0.1, ::1, *.localhost, host.docker.internal), e.g. a service started earlier in the job.'
+    required: false
+    default: ''
+  graphql-endpoint:
+    description: 'Path the GraphQL operations are POSTed to, e.g. /docs/v1/graphql. Defaults to the graphql-url path, else the docs service default /graphql.'
+    required: false
+    default: ''
   working-directory:
     description: 'Directory holding package.json and the spec.'
     required: false
@@ -98,5 +111,8 @@ runs:
         DOCS_SPACE_ID: ${{ inputs.doc-space-id }}
         DOCS_SPEC_PATH: ${{ inputs.spec-path }}
         DOCS_FORMAT: ${{ inputs.format }}
+        DOCS_GRAPHQL: ${{ inputs.graphql }}
+        DOCS_GRAPHQL_URL: ${{ inputs.graphql-url }}
+        DOCS_GRAPHQL_ENDPOINT: ${{ inputs.graphql-endpoint }}
         DOCS_DRY_RUN: ${{ inputs.dry-run }}
       run: '"$GITHUB_ACTION_PATH/publish.sh"'

@@ -1,0 +1,16 @@
+"""A small schema for the publish-docs tests."""
+type Query {
+  "One user by id."
+  user(id: ID!): User
+  users(first: Int = 10): [User!]!
+}
+
+type Mutation {
+  renameUser(id: ID!, name: String!): User
+}
+
+type User {
+  id: ID!
+  name: String!
+  email: String @deprecated(reason: "Use contact.")
+}
