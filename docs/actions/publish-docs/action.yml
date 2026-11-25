@@ -3,7 +3,8 @@ description: >
   Publish a service's, library's or application's spec (OpenAPI, or a GraphQL
   SDL file / introspection of a local endpoint) to the
   Agrippa docs platform (node-service-docs, docs-platform-0) with
-  PUT /sources/:key/versions/:version. Run it on merge to develop / main.
+  PUT /sources/:key/versions/:version, with the service's event manifest
+  (docs/events.json) when it has one. Run it on merge to develop / main.
   200 (same content already published) and 201 (published) both succeed;
   409 (different content under an existing version) fails the step.
 
@@ -71,6 +72,10 @@ inputs:
     description: 'Path the GraphQL operations are POSTed to, e.g. /docs/v1/graphql. Defaults to the graphql-url path, else the docs service default /graphql.'
     required: false
     default: ''
+  events:
+    description: 'Event manifest (topics the service produces and consumes), relative to working-directory. Defaults to docs/events.json when it exists; "none" sends no manifest.'
+    required: false
+    default: ''
   working-directory:
     description: 'Directory holding package.json and the spec.'
     required: false
@@ -114,5 +119,6 @@ runs:
         DOCS_GRAPHQL: ${{ inputs.graphql }}
         DOCS_GRAPHQL_URL: ${{ inputs.graphql-url }}
         DOCS_GRAPHQL_ENDPOINT: ${{ inputs.graphql-endpoint }}
+        DOCS_EVENTS: ${{ inputs.events }}
         DOCS_DRY_RUN: ${{ inputs.dry-run }}
       run: '"$GITHUB_ACTION_PATH/publish.sh"'

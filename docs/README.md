@@ -40,6 +40,7 @@ no-op (200, success), different content under the same version fails (409).
 | `graphql` | | GraphQL SDL file, e.g. `schema.graphql`: publishes it instead of `spec-path` |
 | `graphql-url` | | GraphQL endpoint to introspect instead, **local environment only** |
 | `graphql-endpoint` | `graphql-url` path, else `/graphql` | path the operations are POSTed to |
+| `events` | `docs/events.json` when it exists | the service's event manifest (topics it produces / consumes); `none` sends none |
 | `working-directory` | `.` | where `package.json` and the spec live |
 | `dry-run` | `false` | print the request, send nothing |
 
@@ -67,6 +68,27 @@ jobs:
           client-secret: ${{ secrets.DOCS_PUBLISH_CLIENT_SECRET }}
           doc-space-key: platform
 ```
+
+### Event manifest
+
+A Kafka-using service commits `docs/events.json`, the topics it **produces**
+(through its outbox) and **consumes** (its `@agrippa-io/node-events` runners,
+each in a consumer group), and the action sends it as `events` with the spec
+(docs-platform-0 16.3; node-service-docs `src/lib/eventManifest`). The docs
+service builds the event-flow graph from every service's manifest
+(`GET /docs/v1/events/flow`). The manifest is as immutable as the version: a
+changed manifest needs a new version, like a changed spec.
+
+```json
+{
+  "produces": [{ "topic": "catalog.product.created", "via": "outbox" }],
+  "consumes": [{ "topic": "docs.source.published", "group": "catalog-docs" }]
+}
+```
+
+Pass `events: path/to/manifest.json` for another location, or `events: none`
+to send none. The action only checks the file is an object with `produces` /
+`consumes` arrays; the docs service validates the rest (400).
 
 ### GraphQL
 

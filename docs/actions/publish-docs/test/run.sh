@@ -115,6 +115,34 @@ if run_args DOCS_TOKEN=good-token DOCS_VERSION=1.0.0 -- --graphql schema.graphql
 if run_args DOCS_TOKEN=good-token -- --graphql; then fail "flag with no value should fail"; else grep -q "needs a value" "$WORK/stderr" && pass "--graphql with no value" || fail "no value message"; fi
 if run_args DOCS_TOKEN=good-token -- --bogus; then fail "unknown flag should fail"; else grep -q "unknown argument" "$WORK/stderr" && pass "unknown flag" || fail "unknown flag message"; fi
 
+# Event manifest (docs-platform-0 16.3): docs/events.json by convention, an explicit path, or none.
+mkdir -p docs
+echo '{"produces":[{"topic":"demo.thing.created"}],"consumes":[{"topic":"docs.source.published","group":"demo"}]}' > docs/events.json
+run DOCS_TOKEN=good-token DOCS_SOURCE_KEY=ev-default DOCS_VERSION=1.0.0 \
+  && [ "$(last '.body.events.produces[0].topic')" = demo.thing.created ] && [ "$(last '.body.events.consumes[0].group')" = demo ] \
+  && grep -q "with events from docs/events.json" "$WORK/stdout" \
+  && pass "docs/events.json is sent as events by default" || fail "default events"
+
+echo '{"produces":[],"consumes":[{"topic":"a.b","group":"g"}]}' > events-alt.json
+run DOCS_TOKEN=good-token DOCS_SOURCE_KEY=ev-env DOCS_VERSION=1.0.0 DOCS_EVENTS=events-alt.json \
+  && [ "$(last '.body.events.consumes[0].topic')" = a.b ] && pass "events input (env) overrides the default" || fail "events env"
+run_args DOCS_TOKEN=good-token DOCS_SOURCE_KEY=ev-flag DOCS_VERSION=1.0.0 -- --events events-alt.json \
+  && [ "$(last '.body.events.consumes[0].group')" = g ] && pass "--events flag" || fail "--events flag"
+run_args DOCS_TOKEN=good-token DOCS_SOURCE_KEY=ev-flag2 DOCS_VERSION=1.0.0 -- --events=events-alt.json \
+  && [ "$(last '.body.events.consumes[0].group')" = g ] && pass "--events=file form" || fail "--events= form"
+run DOCS_TOKEN=good-token DOCS_SOURCE_KEY=ev-none DOCS_VERSION=1.0.0 DOCS_EVENTS=none \
+  && [ "$(last '.body | has("events")')" = false ] && pass "events none: no manifest sent" || fail "events none"
+run DOCS_DRY_RUN=true DOCS_SOURCE_KEY=ev-dry DOCS_VERSION=1.0.0 && grep -q "events from docs/events.json" "$WORK/stdout" \
+  && grep -q '"demo.thing.created"' "$WORK/stdout" && pass "dry run shows the events" || fail "events dry run"
+if run DOCS_TOKEN=good-token DOCS_VERSION=1.0.0 DOCS_EVENTS=missing.json; then fail "missing events should fail"; else grep -q "event manifest not found" "$WORK/stderr" && pass "missing event manifest" || fail "missing events message"; fi
+for bad in '[]' '{"produces":{}}' '{"consumes":"x"}' '{"produces":[],"emits":[]}' 'not json'; do
+  echo "$bad" > bad-events.json
+  if run DOCS_TOKEN=good-token DOCS_VERSION=1.0.0 DOCS_EVENTS=bad-events.json; then fail "bad events $bad should fail"; else grep -q "produces / consumes arrays" "$WORK/stderr" && pass "bad event manifest refused: $bad" || fail "bad events message: $bad"; fi
+done
+rm -r docs
+run DOCS_TOKEN=good-token DOCS_SOURCE_KEY=ev-absent DOCS_VERSION=1.0.0 && [ "$(last '.body | has("events")')" = false ] \
+  && pass "no docs/events.json: no manifest sent" || fail "no events file"
+
 rm package.json
 if run DOCS_TOKEN=good-token; then fail "no key should fail"; else grep -q "source-key is required" "$WORK/stderr" && pass "no package.json: key required" || fail "key message"; fi
 run DOCS_TOKEN=good-token DOCS_SOURCE_KEY=spec-only DOCS_REF_NAME=main && [ "$(output version)" = 0.9.0 ] \
