@@ -1,6 +1,6 @@
 name: test-publish-docs
 
-# Tests for docs/actions/publish-docs (docs-platform-0 2.7, GraphQL 5.5): shellcheck plus
+# Tests for docs/actions/publish-docs (docs-platform-0 2.7, GraphQL 5.5, events 16.3): shellcheck plus
 # the script against a local stub API, then the composite action itself in
 # dry-run mode so the input → env mapping is exercised.
 
@@ -33,6 +33,7 @@ jobs:
           echo '{"name":"@agrippa-io/node-demo","version":"1.2.3"}' > "$RUNNER_TEMP/demo/package.json"
           echo '{"openapi":"3.1.0","info":{"title":"Demo","version":"1.2.3"},"paths":{}}' > "$RUNNER_TEMP/demo/openapi.json"
           cp docs/actions/publish-docs/test/fixtures/schema.graphql "$RUNNER_TEMP/demo/schema.graphql"
+          echo '{"produces":[{"topic":"demo.thing.created"}]}' > "$RUNNER_TEMP/demo/events.json"
 
       - name: Action (dry run)
         id: dry
@@ -59,6 +60,7 @@ jobs:
           working-directory: ${{ runner.temp }}/demo
           graphql: schema.graphql
           graphql-endpoint: /demo/graphql
+          events: events.json
           dry-run: 'true'
 
       - name: Check GraphQL outputs
