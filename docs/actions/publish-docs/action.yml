@@ -1,0 +1,102 @@
+name: Publish docs
+description: >
+  Publish a service's, library's or application's spec (OpenAPI today) to the
+  Agrippa docs platform (node-service-docs, docs-platform-0) with
+  PUT /sources/:key/versions/:version. Run it on merge to develop / main.
+  200 (same content already published) and 201 (published) both succeed;
+  409 (different content under an existing version) fails the step.
+
+inputs:
+  api-url:
+    description: 'Docs API base URL, e.g. https://api.example.com/docs/v1.'
+    required: true
+  token:
+    description: 'Client-credentials access token with the docs:publish scope. Leave empty to fetch one with token-url / client-id / client-secret.'
+    required: false
+    default: ''
+  token-url:
+    description: 'OIDC token endpoint for the client-credentials grant (used when token is empty).'
+    required: false
+    default: ''
+  client-id:
+    description: 'OIDC client id for the client-credentials grant.'
+    required: false
+    default: ''
+  client-secret:
+    description: 'OIDC client secret for the client-credentials grant.'
+    required: false
+    default: ''
+  source-key:
+    description: 'Source slug. Defaults to the package.json name without its scope.'
+    required: false
+    default: ''
+  version:
+    description: 'Version label. Defaults to the package.json version on main and release branches, else <version>-dev.<short sha>.'
+    required: false
+    default: ''
+  kind:
+    description: 'service, library or application.'
+    required: false
+    default: service
+  name:
+    description: 'Display name. Defaults to the spec info.title.'
+    required: false
+    default: ''
+  doc-space-key:
+    description: 'Platform doc space key, needed on the first publish of a source.'
+    required: false
+    default: ''
+  doc-space-id:
+    description: 'Doc space id (instead of doc-space-key).'
+    required: false
+    default: ''
+  spec-path:
+    description: 'Path to the spec file, relative to working-directory.'
+    required: false
+    default: openapi.json
+  format:
+    description: 'Spec format. Only openapi is accepted today.'
+    required: false
+    default: openapi
+  working-directory:
+    description: 'Directory holding package.json and the spec.'
+    required: false
+    default: '.'
+  dry-run:
+    description: 'true prints the request and sends nothing.'
+    required: false
+    default: 'false'
+
+outputs:
+  outcome:
+    description: 'created, unchanged or dry-run.'
+    value: ${{ steps.publish.outputs.outcome }}
+  version:
+    description: 'The version label that was published.'
+    value: ${{ steps.publish.outputs.version }}
+  status:
+    description: 'HTTP status of the publish call.'
+    value: ${{ steps.publish.outputs.status }}
+
+runs:
+  using: composite
+  steps:
+    - id: publish
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        DOCS_API_URL: ${{ inputs.api-url }}
+        DOCS_TOKEN: ${{ inputs.token }}
+        DOCS_TOKEN_URL: ${{ inputs.token-url }}
+        DOCS_CLIENT_ID: ${{ inputs.client-id }}
+        DOCS_CLIENT_SECRET: ${{ inputs.client-secret }}
+        DOCS_SOURCE_KEY: ${{ inputs.source-key }}
+        DOCS_VERSION: ${{ inputs.version }}
+        DOCS_KIND: ${{ inputs.kind }}
+        DOCS_NAME: ${{ inputs.name }}
+        DOCS_SPACE_KEY: ${{ inputs.doc-space-key }}
+        DOCS_SPACE_ID: ${{ inputs.doc-space-id }}
+        DOCS_SPEC_PATH: ${{ inputs.spec-path }}
+        DOCS_FORMAT: ${{ inputs.format }}
+        DOCS_DRY_RUN: ${{ inputs.dry-run }}
+      run: '"$GITHUB_ACTION_PATH/publish.sh"'
