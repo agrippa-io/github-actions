@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# publish-docs: PUT a spec to node-service-docs (docs-platform-0 2.7).
+# publish-docs: PUT a spec to node-service-docs (docs-platform-0 2.7; GraphQL 5.5).
 #
 # Reads its inputs from the environment (the composite action maps them):
 #   DOCS_API_URL      base URL of the docs API, e.g. https://api.example.com/docs/v1
@@ -11,15 +11,42 @@
 #   DOCS_NAME         display name (default: the spec's info.title)
 #   DOCS_SPACE_KEY / DOCS_SPACE_ID   doc space for the first publish
 #   DOCS_SPEC_PATH    the spec file (default openapi.json)
-#   DOCS_FORMAT       openapi
+#   DOCS_FORMAT       openapi | graphql (graphql is implied by the two below)
+#   DOCS_GRAPHQL      a GraphQL SDL file (docs-platform-0 5.5)
+#   DOCS_GRAPHQL_URL  a GraphQL endpoint to introspect, local env only (D1)
+#   DOCS_GRAPHQL_ENDPOINT  path the operations are POSTed to (default: the
+#                     introspected URL's path, else the docs service's /graphql)
 #   DOCS_GIT_SHA      commit (default GITHUB_SHA)
 #   DOCS_REF_NAME     branch (default GITHUB_REF_NAME)
 #   DOCS_DRY_RUN      true → print the request, send nothing
+# The same GraphQL settings and dry run also come as flags, for local use:
+#   publish.sh --graphql schema.graphql | --graphql-url http://localhost:4370/v1/graphql
+#              [--graphql-endpoint /graphql] [--dry-run]
 # Writes `outcome`, `version`, `status` to $GITHUB_OUTPUT when set.
 set -euo pipefail
 
 die() { echo "::error::publish-docs: $*" >&2; exit 1; }
 out() { if [ -n "${GITHUB_OUTPUT:-}" ]; then echo "$1=$2" >> "$GITHUB_OUTPUT"; fi; }
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --graphql|--graphql-url|--graphql-endpoint)
+      [ $# -ge 2 ] || die "$1 needs a value"
+      case "$1" in
+        --graphql) DOCS_GRAPHQL="$2" ;;
+        --graphql-url) DOCS_GRAPHQL_URL="$2" ;;
+        --graphql-endpoint) DOCS_GRAPHQL_ENDPOINT="$2" ;;
+      esac
+      shift 2 ;;
+    --graphql=*) DOCS_GRAPHQL="${1#*=}"; shift ;;
+    --graphql-url=*) DOCS_GRAPHQL_URL="${1#*=}"; shift ;;
+    --graphql-endpoint=*) DOCS_GRAPHQL_ENDPOINT="${1#*=}"; shift ;;
+    --dry-run) DOCS_DRY_RUN=true; shift ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
 
 : "${DOCS_API_URL:?api-url is required}"
 SPEC="${DOCS_SPEC_PATH:-openapi.json}"
@@ -27,6 +54,81 @@ FORMAT="${DOCS_FORMAT:-openapi}"
 KIND="${DOCS_KIND:-service}"
 SHA="${DOCS_GIT_SHA:-${GITHUB_SHA:-}}"
 REF="${DOCS_REF_NAME:-${GITHUB_REF_NAME:-}}"
+GQL_FILE="${DOCS_GRAPHQL:-}"
+GQL_URL="${DOCS_GRAPHQL_URL:-}"
+GQL_ENDPOINT="${DOCS_GRAPHQL_ENDPOINT:-}"
+
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
+# True when a URL's host is this machine (loopback, *.localhost) or the
+# docker host: pulling a live schema is for the local environment only (D1).
+is_local_url() {
+  local host="${1#*://}"
+  host="${host%%[/?#]*}"
+  # No userinfo or backslashes: they make the host ambiguous between this
+  # check and curl.
+  case "$host" in *@*|*\\*) return 1 ;; esac
+  case "$host" in
+    \[*\]*) host="${host%%]*}"; host="${host#[}" ;;
+    *) host="${host%%:*}" ;;
+  esac
+  host="$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')"
+  case "$host" in
+    localhost|*.localhost|127.*|::1|0:0:0:0:0:0:0:1|host.docker.internal) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+if [ -n "$GQL_FILE" ] && [ -n "$GQL_URL" ]; then
+  die "pass graphql (an SDL file) or graphql-url, not both"
+fi
+if [ -n "$GQL_FILE$GQL_URL" ]; then
+  [ "$FORMAT" = openapi ] || [ "$FORMAT" = graphql ] || die "format $FORMAT does not take a GraphQL schema"
+  FORMAT=graphql
+fi
+if [ "$FORMAT" = graphql ] && [ -z "$GQL_FILE$GQL_URL" ]; then
+  die "format graphql needs graphql (an SDL file) or graphql-url"
+fi
+
+case "$GQL_ENDPOINT" in
+  ''|/*) ;;
+  *) die "graphql-endpoint must be a path starting with /: $GQL_ENDPOINT" ;;
+esac
+
+if [ -n "$GQL_FILE" ]; then
+  [ -f "$GQL_FILE" ] || die "GraphQL schema not found: $GQL_FILE"
+  grep -q '[^[:space:]]' "$GQL_FILE" || die "GraphQL schema is empty: $GQL_FILE"
+  SPEC="$TMP/graphql.json"
+  jq -n --rawfile sdl "$GQL_FILE" --arg endpoint "$GQL_ENDPOINT" \
+    '{ sdl: $sdl } + (if $endpoint != "" then { endpoint: $endpoint } else {} end)' > "$SPEC"
+elif [ -n "$GQL_URL" ]; then
+  case "$GQL_URL" in http://*|https://*) ;; *) die "graphql-url must be an http(s) URL: $GQL_URL" ;; esac
+  is_local_url "$GQL_URL" \
+    || die "graphql-url must point at the local environment (localhost, 127.0.0.1, ::1, *.localhost); publish the SDL file from CI instead: $GQL_URL"
+  if [ -z "$GQL_ENDPOINT" ]; then
+    GQL_PATH="${GQL_URL#*://}"
+    case "$GQL_PATH" in */*) GQL_PATH="/${GQL_PATH#*/}" ;; *) GQL_PATH="" ;; esac
+    GQL_PATH="${GQL_PATH%%[?#]*}"
+    [ "$GQL_PATH" = / ] && GQL_PATH=""
+    GQL_ENDPOINT="$GQL_PATH"
+  fi
+  jq -n --rawfile query "$HERE/introspection.graphql" \
+    '{ operationName: "IntrospectionQuery", query: $query }' > "$TMP/introspect.json"
+  GQL_STATUS="$(curl -sS -o "$TMP/introspection.json" -w '%{http_code}' -X POST "$GQL_URL" \
+    -H 'Content-Type: application/json' -H 'Accept: application/graphql-response+json, application/json' \
+    --data-binary "@$TMP/introspect.json")" || die "introspection request to $GQL_URL failed"
+  case "$GQL_STATUS" in 2*) ;; *) head -c 2000 "$TMP/introspection.json" >&2; die "introspection of $GQL_URL answered $GQL_STATUS" ;; esac
+  jq -e '.data.__schema | type == "object"' "$TMP/introspection.json" > /dev/null 2>&1 || {
+    jq -r '.errors[]?.message // empty' "$TMP/introspection.json" >&2 2>/dev/null || true
+    die "introspection of $GQL_URL returned no data.__schema"
+  }
+  SPEC="$TMP/graphql.json"
+  jq --arg endpoint "$GQL_ENDPOINT" \
+    '{ __schema: .data.__schema } + (if $endpoint != "" then { endpoint: $endpoint } else {} end)' \
+    "$TMP/introspection.json" > "$SPEC"
+  echo "publish-docs: introspected $GQL_URL"
+fi
 
 [ -f "$SPEC" ] || die "spec not found: $SPEC"
 jq -e 'type == "object"' "$SPEC" > /dev/null 2>&1 || die "spec is not a JSON object: $SPEC"
@@ -53,8 +155,7 @@ fi
 NAME="${DOCS_NAME:-$(jq -r '.info.title // empty' "$SPEC")}"
 [ -n "$NAME" ] || NAME="$KEY"
 
-BODY="$(mktemp)"
-trap 'rm -f "$BODY"' EXIT
+BODY="$TMP/body.json"
 jq -n \
   --arg kind "$KIND" --arg name "$NAME" --arg format "$FORMAT" \
   --arg spaceKey "${DOCS_SPACE_KEY:-}" --arg spaceId "${DOCS_SPACE_ID:-}" \
@@ -86,8 +187,7 @@ if [ -z "$TOKEN" ]; then
 fi
 echo "::add-mask::$TOKEN"
 
-RESP="$(mktemp)"
-trap 'rm -f "$BODY" "$RESP"' EXIT
+RESP="$TMP/response.json"
 STATUS="$(curl -sS -o "$RESP" -w '%{http_code}' -X PUT "$URL" \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   --data-binary "@$BODY")" || die "request to $URL failed"

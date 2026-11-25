@@ -1,6 +1,6 @@
 name: test-publish-docs
 
-# Tests for docs/actions/publish-docs (docs-platform-0 2.7): shellcheck plus
+# Tests for docs/actions/publish-docs (docs-platform-0 2.7, GraphQL 5.5): shellcheck plus
 # the script against a local stub API, then the composite action itself in
 # dry-run mode so the input → env mapping is exercised.
 
@@ -32,6 +32,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/demo"
           echo '{"name":"@agrippa-io/node-demo","version":"1.2.3"}' > "$RUNNER_TEMP/demo/package.json"
           echo '{"openapi":"3.1.0","info":{"title":"Demo","version":"1.2.3"},"paths":{}}' > "$RUNNER_TEMP/demo/openapi.json"
+          cp docs/actions/publish-docs/test/fixtures/schema.graphql "$RUNNER_TEMP/demo/schema.graphql"
 
       - name: Action (dry run)
         id: dry
@@ -49,3 +50,18 @@ jobs:
         run: |
           [ "$OUTCOME" = dry-run ] || { echo "outcome=$OUTCOME"; exit 1; }
           case "$VERSION" in 1.2.3|1.2.3-dev.*) ;; *) echo "version=$VERSION"; exit 1 ;; esac
+
+      - name: Action, GraphQL SDL (dry run)
+        id: gql
+        uses: ./docs/actions/publish-docs
+        with:
+          api-url: http://127.0.0.1:1/docs/v1
+          working-directory: ${{ runner.temp }}/demo
+          graphql: schema.graphql
+          graphql-endpoint: /demo/graphql
+          dry-run: 'true'
+
+      - name: Check GraphQL outputs
+        env:
+          OUTCOME: ${{ steps.gql.outputs.outcome }}
+        run: '[ "$OUTCOME" = dry-run ] || { echo "outcome=$OUTCOME"; exit 1; }'

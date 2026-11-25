@@ -20,6 +20,13 @@ fails=0
 pass() { echo "ok   - $1"; }
 fail() { echo "FAIL - $1"; fails=$((fails + 1)); }
 run() { env -i PATH="$PATH" HOME="$HOME" GITHUB_OUTPUT="$WORK/out" DOCS_API_URL="http://127.0.0.1:$PORT/docs/v1/" "$@" "$SCRIPT" > "$WORK/stdout" 2> "$WORK/stderr"; }
+# run_args ENV=… -- flags…: the same, with command-line flags after the --.
+run_args() {
+  local envs=()
+  while [ "$1" != -- ]; do envs+=("$1"); shift; done
+  shift
+  env -i PATH="$PATH" HOME="$HOME" GITHUB_OUTPUT="$WORK/out" DOCS_API_URL="http://127.0.0.1:$PORT/docs/v1/" "${envs[@]}" "$SCRIPT" "$@" > "$WORK/stdout" 2> "$WORK/stderr"
+}
 output() { grep "^$1=" "$WORK/out" | tail -1 | cut -d= -f2-; }
 last() { tail -1 "$LOG" | jq -r "$1"; }
 
@@ -53,10 +60,66 @@ requests=$(wc -l < "$LOG")
 run DOCS_DRY_RUN=true DOCS_REF_NAME=main && [ "$(output outcome)" = dry-run ] && grep -q "PUT http://127.0.0.1:$PORT/docs/v1/sources/node-demo/versions/1.2.3" "$WORK/stdout" \
   && [ "$(wc -l < "$LOG")" = "$requests" ] && pass "dry run sends nothing" || fail "dry run"
 
+# GraphQL (docs-platform-0 5.5): an SDL file, or introspection of a local URL.
+cp "$HERE/fixtures/schema.graphql" schema.graphql
+run_args DOCS_TOKEN=good-token DOCS_SOURCE_KEY=gql-sdl DOCS_REF_NAME=main -- --graphql schema.graphql \
+  && [ "$(output outcome)" = created ] && [ "$(output version)" = 1.2.3 ] \
+  && [ "$(last '.body | [.format, .name] | join(",")')" = "graphql,gql-sdl" ] \
+  && [ "$(last '.doc.keys | join(",")')" = sdl ] \
+  && [ "$(last '.doc.sdlHead')" = '"""A small schema for the publish-docs tests."""' ] \
+  && pass "--graphql schema.graphql: format graphql, { sdl }, name defaults to the key" || fail "--graphql sdl"
+
+run_args DOCS_TOKEN=good-token DOCS_SOURCE_KEY=gql-sdl DOCS_REF_NAME=main -- --graphql=schema.graphql && [ "$(output outcome)" = unchanged ] \
+  && pass "--graphql=file form, same SDL again: unchanged" || fail "--graphql= form"
+
+run DOCS_TOKEN=good-token DOCS_SOURCE_KEY=gql-env DOCS_VERSION=1.0.0 DOCS_GRAPHQL=schema.graphql DOCS_GRAPHQL_ENDPOINT=/docs/v1/graphql DOCS_NAME="Docs GraphQL" \
+  && [ "$(last '.doc.keys | join(",")')" = "endpoint,sdl" ] && [ "$(last .doc.endpoint)" = /docs/v1/graphql ] \
+  && [ "$(last .body.name)" = "Docs GraphQL" ] \
+  && pass "graphql + graphql-endpoint inputs (env): endpoint rides along" || fail "graphql env inputs"
+
+run_args DOCS_TOKEN=good-token DOCS_SOURCE_KEY=gql-url DOCS_VERSION=1.0.0 -- --graphql-url "http://localhost:$PORT/api/graphql?x=1" \
+  && [ "$(last .body.format)" = graphql ] && [ "$(last '.doc.keys | join(",")')" = "__schema,endpoint" ] \
+  && [ "$(last .doc.queryType)" = Query ] && [ "$(last .doc.endpoint)" = /api/graphql ] \
+  && [ "$(tail -2 "$LOG" | head -1 | jq -r '.graphql.operationName')" = IntrospectionQuery ] \
+  && grep -q "introspected http://localhost:$PORT/api/graphql" "$WORK/stdout" \
+  && pass "--graphql-url localhost: introspects, sends { __schema, endpoint = URL path }" || fail "--graphql-url"
+
+run DOCS_TOKEN=good-token DOCS_SOURCE_KEY=gql-url2 DOCS_VERSION=1.0.0 DOCS_GRAPHQL_URL="http://127.0.0.1:$PORT/graphql" DOCS_GRAPHQL_ENDPOINT=/v1/graphql \
+  && [ "$(last .doc.endpoint)" = /v1/graphql ] && pass "graphql-url (env) with an explicit endpoint" || fail "graphql-url env"
+
+requests=$(wc -l < "$LOG")
+run_args DOCS_SOURCE_KEY=gql-dry DOCS_VERSION=1.0.0 -- --graphql-url "http://LOCALHOST:$PORT/graphql" --dry-run \
+  && [ "$(output outcome)" = dry-run ] && grep -q '"format": "graphql"' "$WORK/stdout" \
+  && [ "$(tail -1 "$LOG" | jq -r .graphql.operationName)" = IntrospectionQuery ] && [ "$(wc -l < "$LOG")" -eq $((requests + 1)) ] \
+  && pass "--dry-run with --graphql-url: introspects, publishes nothing" || fail "graphql dry run"
+
+for url in "http://[::1]:1/graphql" "http://docs.localhost:1/graphql" "http://127.0.0.2:1/graphql" "http://host.docker.internal:1/graphql"; do
+  run_args DOCS_TOKEN=good-token DOCS_VERSION=1.0.0 -- --graphql-url "$url"
+  grep -q "local environment" "$WORK/stderr" && fail "local $url refused" || pass "local graphql-url accepted: $url"
+done
+
+for url in "https://api.example.com/graphql" "http://10.0.0.5:4000/graphql" "http://localhost.example.com/graphql" "http://user@evil.com/graphql" "http://evil.com#@localhost/graphql" "http://evil.com?@localhost/" "http://localhost@evil.com/"; do
+  if run_args DOCS_TOKEN=good-token DOCS_VERSION=1.0.0 -- --graphql-url "$url"; then fail "non-local $url should fail"; else grep -q "local environment" "$WORK/stderr" && pass "non-local graphql-url refused: $url" || fail "non-local message: $url"; fi
+done
+if run_args DOCS_TOKEN=good-token DOCS_VERSION=1.0.0 -- --graphql-url "ftp://localhost/graphql"; then fail "ftp should fail"; else grep -q "http(s) URL" "$WORK/stderr" && pass "graphql-url must be http(s)" || fail "scheme message"; fi
+if run_args DOCS_TOKEN=good-token DOCS_VERSION=1.0.0 -- --graphql-url "http://localhost:$PORT/graphql-errors"; then fail "errors should fail"; else grep -q "introspection is disabled" "$WORK/stderr" && grep -q "no data.__schema" "$WORK/stderr" && pass "introspection errors: shown, step fails" || fail "introspection errors"; fi
+if run_args DOCS_TOKEN=good-token DOCS_VERSION=1.0.0 -- --graphql-url "http://localhost:$PORT/graphql-down"; then fail "503 should fail"; else grep -q "answered 503" "$WORK/stderr" && pass "introspection 503 fails" || fail "introspection 503"; fi
+if run_args DOCS_TOKEN=good-token DOCS_VERSION=1.0.0 -- --graphql-url "http://localhost:1/graphql"; then fail "unreachable should fail"; else grep -q "introspection request to" "$WORK/stderr" && pass "unreachable introspection URL fails" || fail "unreachable message"; fi
+if run_args DOCS_TOKEN=good-token DOCS_VERSION=1.0.0 -- --graphql schema.graphql --graphql-url "http://localhost:$PORT/graphql"; then fail "both should fail"; else grep -q "not both" "$WORK/stderr" && pass "graphql and graphql-url together refused" || fail "both message"; fi
+if run_args DOCS_TOKEN=good-token DOCS_VERSION=1.0.0 -- --graphql missing.graphql; then fail "missing sdl should fail"; else grep -q "GraphQL schema not found" "$WORK/stderr" && pass "missing SDL file" || fail "missing sdl message"; fi
+printf '  \n\n' > empty.graphql
+if run_args DOCS_TOKEN=good-token DOCS_VERSION=1.0.0 -- --graphql empty.graphql; then fail "empty sdl should fail"; else grep -q "GraphQL schema is empty" "$WORK/stderr" && pass "empty SDL file" || fail "empty sdl message"; fi
+if run DOCS_TOKEN=good-token DOCS_VERSION=1.0.0 DOCS_FORMAT=graphql; then fail "graphql with no schema should fail"; else grep -q "needs graphql" "$WORK/stderr" && pass "format graphql without a schema" || fail "no schema message"; fi
+if run DOCS_TOKEN=good-token DOCS_VERSION=1.0.0 DOCS_FORMAT=asyncapi DOCS_GRAPHQL=schema.graphql; then fail "asyncapi+graphql should fail"; else grep -q "does not take a GraphQL schema" "$WORK/stderr" && pass "another format with a GraphQL schema refused" || fail "format clash message"; fi
+if run_args DOCS_TOKEN=good-token DOCS_VERSION=1.0.0 -- --graphql schema.graphql --graphql-endpoint graphql; then fail "relative endpoint should fail"; else grep -q "must be a path" "$WORK/stderr" && pass "graphql-endpoint must start with /" || fail "endpoint message"; fi
+if run_args DOCS_TOKEN=good-token -- --graphql; then fail "flag with no value should fail"; else grep -q "needs a value" "$WORK/stderr" && pass "--graphql with no value" || fail "no value message"; fi
+if run_args DOCS_TOKEN=good-token -- --bogus; then fail "unknown flag should fail"; else grep -q "unknown argument" "$WORK/stderr" && pass "unknown flag" || fail "unknown flag message"; fi
+
 rm package.json
 if run DOCS_TOKEN=good-token; then fail "no key should fail"; else grep -q "source-key is required" "$WORK/stderr" && pass "no package.json: key required" || fail "key message"; fi
 run DOCS_TOKEN=good-token DOCS_SOURCE_KEY=spec-only DOCS_REF_NAME=main && [ "$(output version)" = 0.9.0 ] \
   && pass "no package.json: version from info.version" || fail "info.version default"
+if run_args DOCS_TOKEN=good-token DOCS_SOURCE_KEY=gql-nover DOCS_REF_NAME=main -- --graphql schema.graphql; then fail "graphql with no version should fail"; else grep -q "version is required" "$WORK/stderr" && pass "no package.json, GraphQL: version required" || fail "graphql version message"; fi
 
 echo
 [ "$fails" -eq 0 ] && echo "publish-docs: all tests passed" || { echo "publish-docs: $fails failed"; exit 1; }
