@@ -134,3 +134,81 @@ a local stub API (python3, jq, curl), which also plays a GraphQL server
 answering introspection from `test/fixtures/` (an SDL and its introspection
 result); CI (`test-publish-docs.yml`) adds shellcheck and dry runs of the
 composite action (OpenAPI and GraphQL SDL).
+
+## `sdk-contract-stack`
+
+`agrippa-io/github-actions/docs/actions/sdk-contract-stack@v1`: starts the local
+stack the SDK repos' **contract suites** run against (docs-platform-0 15.6):
+`node-auth-service`, `node-service-authz` and `node-service-docs`, checked out
+and run from source next to throwaway Postgres, Redis, Mongo and OpenFGA
+containers. It then publishes the auth and authz specs to docs (as their CI
+does on merge, D1) and waits for ingestion, and seeds a fixture: a platform
+admin (`system.admin`) who owns one organization. Everything is `localhost`;
+no cloud host is ever touched.
+
+**Used by:** the `contract` job of `sdk-typescript`, `sdk-python` and `sdk-java`.
+
+**Auth:** `token` must read the three private service repos
+(`secrets.RELEASE_TOKEN`); `GITHUB_TOKEN` only reads the calling repo. Service
+tokens come from `node-auth-service`'s `/dev/token` (never mounted in
+production), so authz and docs verify real RS256 tokens against its JWKS.
+
+| Input | Default | Meaning |
+| --- | --- | --- |
+| `token` | (required) | reads `agrippa-io/node-auth-service`, `node-service-authz`, `node-service-docs` |
+| `npm-token` | (required) | the services' private `@agrippa-io` dependencies |
+| `auth-ref` / `authz-ref` / `docs-ref` | `main` / `main` / `develop` | the refs to run |
+| `path` | `.contract-stack` | checkouts, logs and the env file |
+
+| Output | Meaning |
+| --- | --- |
+| `env-file` | the env file (also appended to `GITHUB_ENV`) |
+| `script` | `stack.sh`, for `logs` / `down` later in the job |
+
+Exported to the job (the password is masked):
+
+| Variable | Value |
+| --- | --- |
+| `AGRIPPA_CONTRACT_AUTH_URL` / `_AUTHZ_URL` / `_DOCS_URL` | `http://localhost:4200` / `:4201` / `:4370` |
+| `AGRIPPA_CONTRACT_AUTH_VERSION` / `_AUTHZ_VERSION` | the published spec versions (`info.version`) |
+| `AGRIPPA_CONTRACT_EMAIL` / `_PASSWORD` | the fixture platform admin (a generated test value) |
+| `AGRIPPA_CONTRACT_ORG_KEY` | the `org-key` of the organization it owns |
+
+```yaml
+contract:
+  runs-on: ${{ vars.RUNNER || 'ubuntu-latest' }}
+  steps:
+    - uses: actions/checkout@v4
+    - id: stack
+      uses: agrippa-io/github-actions/docs/actions/sdk-contract-stack@v1
+      with:
+        token: ${{ secrets.RELEASE_TOKEN }}
+        npm-token: ${{ secrets.NPM_TOKEN }}
+    - run: npm run test:contract
+    - if: failure()
+      run: ${{ steps.stack.outputs.script }} logs
+```
+
+**Locally** the same script runs against your own checkouts (Docker needed;
+ports 4200 / 4201 / 4370 free, container ports 55432 / 56379 / 57017 / 58080):
+
+```bash
+STACK_AUTH_DIR=../../services/node-auth-service \
+STACK_AUTHZ_DIR=../../services/node-service-authz \
+STACK_DOCS_DIR=../../services/node-service-docs \
+  ../../github-actions/docs/actions/sdk-contract-stack/stack.sh up
+set -a; . .contract-stack/env; set +a      # then run the SDK's contract suite
+../../github-actions/docs/actions/sdk-contract-stack/stack.sh down
+```
+
+`STACK_*_PORT`, `STACK_NAME` (container prefix, default `sdk-contract`),
+`STACK_STATE_DIR` and `STACK_WAIT_SECONDS` override the defaults. `up` refuses
+a service port that is already taken. `logs` prints the last lines of each
+service log.
+
+What the seed does that no API does (on purpose, in a throwaway database only):
+runs auth's `seedSystemPoliciesAndRoles`, binds a `system.admin` policy to the
+`system.admin` role (the organization admin routes check it, and the seed
+doesn't create it), makes the fixture user a system admin, and adds them to
+their organization as `organization.owner`. It also inserts the public
+`platform` doc space the specs are published into.
