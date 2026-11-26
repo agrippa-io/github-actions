@@ -36,8 +36,10 @@ jobs:
         run: |
           set -euo pipefail
           [ -z "${AGRIPPA_CONTRACT_PASSWORD:-}" ]   # never exported to the job
+          set -a
           # shellcheck source=/dev/null
-          set -a; . "$ENV_FILE"; set +a
+          . "$ENV_FILE"
+          set +a
           for url in "$AGRIPPA_CONTRACT_AUTH_URL" "$AGRIPPA_CONTRACT_AUTHZ_URL" "$AGRIPPA_CONTRACT_DOCS_URL"; do
             curl -fsS "$url/health" >/dev/null
           done
