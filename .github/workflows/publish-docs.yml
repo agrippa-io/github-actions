@@ -1,0 +1,218 @@
+name: publish-docs
+
+# Reusable workflow (docs-platform-0 14.1): build a repo's docs document and
+# publish it to the docs platform with docs/actions/publish-docs, on every
+# merge to develop / main (D1: CI pushes, the docs service never scrapes).
+#
+# Every service, library and app calls it the same way from its ci.yml, after
+# its `ci-ok` gate; only `kind`, `format`, the spec path and the build command
+# differ. Where it publishes to comes from the caller's organization / repo
+# variables, so wiring a repo is independent of whether a docs host exists:
+#
+#   vars.DOCS_API_URL            docs API base, e.g. https://api.<env>/docs/v1
+#   vars.DOCS_TOKEN_URL          OIDC token endpoint (client credentials)
+#   vars.DOCS_PUBLISH_CLIENT_ID  the publishing client's id
+#   secrets: docs-client-secret  its secret (or docs-token, a ready token)
+#
+# With `dry-run: auto` (the default) a run that has no API URL or no
+# credentials builds the document and validates the request without sending
+# it (a notice says so), so CI stays green before the docs host is
+# configured and starts publishing the moment it is.
+
+on:
+  workflow_call:
+    inputs:
+      kind:
+        description: 'service, library or application.'
+        required: false
+        type: string
+        default: service
+      format:
+        description: 'openapi, graphql, asyncapi, typedoc or manifest.'
+        required: false
+        type: string
+        default: openapi
+      spec-path:
+        description: 'The document to publish, relative to working-directory (openapi.json, docs/typedoc.json, docs/app-manifest.json, …).'
+        required: false
+        type: string
+        default: openapi.json
+      graphql:
+        description: 'A GraphQL SDL file to publish instead of spec-path (format graphql).'
+        required: false
+        type: string
+        default: ''
+      graphql-endpoint:
+        description: 'Path the GraphQL operations are POSTed to.'
+        required: false
+        type: string
+        default: ''
+      events:
+        description: 'Event manifest; default docs/events.json when it exists, "none" for none.'
+        required: false
+        type: string
+        default: ''
+      recipes:
+        description: 'Recipes directory; default docs/recipes when it has *.md, "none" for none.'
+        required: false
+        type: string
+        default: ''
+      source-key:
+        description: 'Source slug; default the package.json name without its scope.'
+        required: false
+        type: string
+        default: ''
+      name:
+        description: 'Display name; default the spec info.title, else the source key.'
+        required: false
+        type: string
+        default: ''
+      version:
+        description: 'Version label; default package.json version on main / release, else <version>-dev.<sha>.'
+        required: false
+        type: string
+        default: ''
+      doc-space-key:
+        description: 'Platform doc space for the first publish.'
+        required: false
+        type: string
+        default: platform
+      working-directory:
+        description: 'Directory holding package.json and the document.'
+        required: false
+        type: string
+        default: '.'
+      install:
+        description: 'Set up Node and install dependencies (setup-node-project) before build-command.'
+        required: false
+        type: boolean
+        default: true
+      build-command:
+        description: 'Shell command that writes the document (e.g. npm run openapi:generate). Empty: the document is committed.'
+        required: false
+        type: string
+        default: ''
+      npm-scope:
+        description: 'Private npm scope for the install.'
+        required: false
+        type: string
+        default: '@agrippa-io'
+      node-version-file:
+        description: 'File holding the Node version.'
+        required: false
+        type: string
+        default: .nvmrc
+      package-manager:
+        description: 'auto, npm or yarn.'
+        required: false
+        type: string
+        default: auto
+      api-url:
+        description: 'Docs API base URL; default vars.DOCS_API_URL.'
+        required: false
+        type: string
+        default: ''
+      dry-run:
+        description: 'auto (dry run when no API URL or credentials), true or false.'
+        required: false
+        type: string
+        default: auto
+    secrets:
+      npm-token:
+        description: 'NPM token for the private @agrippa-io dependencies.'
+        required: false
+      docs-token:
+        description: 'A docs:publish access token (instead of client credentials).'
+        required: false
+      docs-client-secret:
+        description: 'Client secret of vars.DOCS_PUBLISH_CLIENT_ID.'
+        required: false
+    outputs:
+      outcome:
+        description: 'created, unchanged or dry-run.'
+        value: ${{ jobs.publish.outputs.outcome }}
+      version:
+        description: 'The version label.'
+        value: ${{ jobs.publish.outputs.version }}
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish docs
+    runs-on: ${{ vars.RUNNER || 'ubuntu-latest' }}
+    outputs:
+      outcome: ${{ steps.publish.outputs.outcome }}
+      version: ${{ steps.publish.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - if: ${{ inputs.install }}
+        uses: agrippa-io/github-actions/npm/actions/setup-node-project@v1.13.0
+        with:
+          npm-scope: ${{ inputs.npm-scope }}
+          node-version-file: ${{ inputs.node-version-file }}
+          npm-token: ${{ secrets.npm-token }}
+          package-manager: ${{ inputs.package-manager }}
+
+      - if: ${{ inputs.build-command != '' }}
+        name: Build the document
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.npm-token }}
+        run: ${{ inputs.build-command }}
+
+      - id: resolve
+        name: Decide publish or dry run
+        shell: bash
+        env:
+          INPUT_URL: ${{ inputs.api-url }}
+          VARS_URL: ${{ vars.DOCS_API_URL }}
+          TOKEN_URL: ${{ vars.DOCS_TOKEN_URL }}
+          CLIENT_ID: ${{ vars.DOCS_PUBLISH_CLIENT_ID }}
+          HAS_TOKEN: ${{ secrets.docs-token != '' }}
+          HAS_SECRET: ${{ secrets.docs-client-secret != '' }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          url="${INPUT_URL:-$VARS_URL}"
+          creds=false
+          if [ "$HAS_TOKEN" = true ] || { [ -n "$TOKEN_URL" ] && [ -n "$CLIENT_ID" ] && [ "$HAS_SECRET" = true ]; }; then creds=true; fi
+          case "$DRY_RUN" in
+            true) dry=true ;;
+            false)
+              [ -n "$url" ] || { echo "::error::publish-docs: dry-run is false but there is no api-url / vars.DOCS_API_URL"; exit 1; }
+              dry=false ;;
+            auto)
+              if [ -n "$url" ] && [ "$creds" = true ]; then dry=false; else
+                dry=true
+                echo "::notice::publish-docs: dry run (no vars.DOCS_API_URL or no docs credentials configured); the document was built and the request validated, nothing was sent"
+              fi ;;
+            *) echo "::error::publish-docs: dry-run must be auto, true or false, not $DRY_RUN"; exit 1 ;;
+          esac
+          # The action needs an api-url even for a dry run; nothing is sent to it.
+          echo "api-url=${url:-http://127.0.0.1:1/docs/v1}" >> "$GITHUB_OUTPUT"
+          echo "dry-run=$dry" >> "$GITHUB_OUTPUT"
+
+      - id: publish
+        uses: agrippa-io/github-actions/docs/actions/publish-docs@v1.13.0
+        with:
+          api-url: ${{ steps.resolve.outputs.api-url }}
+          token: ${{ secrets.docs-token }}
+          token-url: ${{ vars.DOCS_TOKEN_URL }}
+          client-id: ${{ vars.DOCS_PUBLISH_CLIENT_ID }}
+          client-secret: ${{ secrets.docs-client-secret }}
+          source-key: ${{ inputs.source-key }}
+          version: ${{ inputs.version }}
+          kind: ${{ inputs.kind }}
+          name: ${{ inputs.name }}
+          doc-space-key: ${{ inputs.doc-space-key }}
+          spec-path: ${{ inputs.spec-path }}
+          format: ${{ inputs.format }}
+          graphql: ${{ inputs.graphql }}
+          graphql-endpoint: ${{ inputs.graphql-endpoint }}
+          events: ${{ inputs.events }}
+          recipes: ${{ inputs.recipes }}
+          working-directory: ${{ inputs.working-directory }}
+          dry-run: ${{ steps.resolve.outputs.dry-run }}

@@ -4,7 +4,7 @@ description: >
   SDL file / introspection of a local endpoint) to the
   Agrippa docs platform (node-service-docs, docs-platform-0) with
   PUT /sources/:key/versions/:version, with the service's event manifest
-  (docs/events.json) when it has one. Run it on merge to develop / main.
+  (docs/events.json) and its recipes (docs/recipes/*.md) when it has them. Run it on merge to develop / main.
   200 (same content already published) and 201 (published) both succeed;
   409 (different content under an existing version) fails the step.
 
@@ -76,6 +76,10 @@ inputs:
     description: 'Event manifest (topics the service produces and consumes), relative to working-directory. Defaults to docs/events.json when it exists; "none" sends no manifest.'
     required: false
     default: ''
+  recipes:
+    description: 'Directory of repo-authored recipes (*.md), relative to working-directory. Defaults to docs/recipes when it has any; "none" sends none.'
+    required: false
+    default: ''
   working-directory:
     description: 'Directory holding package.json and the spec.'
     required: false
@@ -120,5 +124,6 @@ runs:
         DOCS_GRAPHQL_URL: ${{ inputs.graphql-url }}
         DOCS_GRAPHQL_ENDPOINT: ${{ inputs.graphql-endpoint }}
         DOCS_EVENTS: ${{ inputs.events }}
+        DOCS_RECIPES: ${{ inputs.recipes }}
         DOCS_DRY_RUN: ${{ inputs.dry-run }}
       run: '"$GITHUB_ACTION_PATH/publish.sh"'

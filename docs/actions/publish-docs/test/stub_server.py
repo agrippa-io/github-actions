@@ -65,6 +65,8 @@ class Handler(BaseHTTPRequestHandler):
             log.write(json.dumps({'path': self.path, 'auth': self.headers.get('Authorization'), 'body': {k: v for k, v in body.items() if k != 'document'}, 'doc': summary(body['document'])}) + '\n')
         if self.headers.get('Authorization') not in ('Bearer good-token', 'Bearer fetched-token'):
             return self.reply(401, {'message': 'Invalid service token'})
+        if any('BROKEN' in r.get('markdown', '') for r in body.get('recipes', [])):
+            return self.reply(422, {'error': 'recipe diagnostics', 'details': {'diagnostics': [{'level': 'error', 'pointer': '/recipes/0/steps/0/operation', 'message': 'unknown operation'}]}})
         if parts[-3] == 'boom':
             return self.reply(500, {'message': 'boom'})
         key = (parts[-3], parts[-1])

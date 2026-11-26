@@ -1,15 +1,19 @@
 name: test-publish-docs
 
-# Tests for docs/actions/publish-docs (docs-platform-0 2.7, GraphQL 5.5, events 16.3): shellcheck plus
+# Tests for docs/actions/publish-docs (docs-platform-0 2.7, GraphQL 5.5, events 16.3, recipes 14.1): shellcheck plus
 # the script against a local stub API, then the composite action itself in
 # dry-run mode so the input → env mapping is exercised.
 
 on:
   pull_request:
-    paths: ['docs/**', '.github/workflows/test-publish-docs.yml']
+    paths: ['docs/**', '.github/workflows/test-publish-docs.yml', '.github/workflows/publish-docs.yml']
   push:
     branches: [main]
-    paths: ['docs/**', '.github/workflows/test-publish-docs.yml']
+    paths: ['docs/**', '.github/workflows/test-publish-docs.yml', '.github/workflows/publish-docs.yml']
+    # The reusable workflow pins publish-docs at an exact tag, so it is tested
+    # from the tag itself (job `reusable`), right after the tag is cut.
+    tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -67,3 +71,39 @@ jobs:
         env:
           OUTCOME: ${{ steps.gql.outputs.outcome }}
         run: '[ "$OUTCOME" = dry-run ] || { echo "outcome=$OUTCOME"; exit 1; }'
+
+      - name: Action, recipes (dry run)
+        id: rc
+        uses: ./docs/actions/publish-docs
+        with:
+          api-url: http://127.0.0.1:1/docs/v1
+          working-directory: docs/actions/publish-docs/test/fixtures/reusable
+          dry-run: 'true'
+
+      - name: Check recipes outputs
+        env:
+          OUTCOME: ${{ steps.rc.outputs.outcome }}
+        run: '[ "$OUTCOME" = dry-run ] || { echo "outcome=$OUTCOME"; exit 1; }'
+
+  # The reusable workflow (14.1) end to end: no vars.DOCS_API_URL here, so
+  # `dry-run: auto` builds and validates without sending. Runs from a tag
+  # (or by hand), where its pinned publish-docs@<tag> exists.
+  reusable:
+    if: ${{ startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' }}
+    uses: ./.github/workflows/publish-docs.yml
+    with:
+      install: false
+      build-command: test -f openapi.json
+      working-directory: docs/actions/publish-docs/test/fixtures/reusable
+      api-url: ''
+
+  reusable-check:
+    needs: reusable
+    runs-on: ${{ vars.RUNNER || 'ubuntu-latest' }}
+    steps:
+      - env:
+          OUTCOME: ${{ needs.reusable.outputs.outcome }}
+          VERSION: ${{ needs.reusable.outputs.version }}
+        run: |
+          [ "$OUTCOME" = dry-run ] || { echo "outcome=$OUTCOME"; exit 1; }
+          case "$VERSION" in 1.2.3|1.2.3-dev.*) ;; *) echo "version=$VERSION"; exit 1 ;; esac

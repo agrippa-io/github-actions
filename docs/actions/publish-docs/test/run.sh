@@ -143,6 +143,39 @@ rm -r docs
 run DOCS_TOKEN=good-token DOCS_SOURCE_KEY=ev-absent DOCS_VERSION=1.0.0 && [ "$(last '.body | has("events")')" = false ] \
   && pass "no docs/events.json: no manifest sent" || fail "no events file"
 
+# Recipes (docs-platform-0 8.2, 14.1): docs/recipes/*.md by convention, an explicit directory, or none.
+mkdir -p docs/recipes other-recipes/nested
+printf -- '---\ntitle: B\n---\n## Step\noperation: listThings\n' > docs/recipes/b-second.md
+printf -- '---\ntitle: A\n---\n## Step\n' > docs/recipes/a-first.md
+echo 'not a recipe' > docs/recipes/notes.txt
+run DOCS_TOKEN=good-token DOCS_SOURCE_KEY=rc-default DOCS_VERSION=1.0.0 \
+  && [ "$(last '.body.recipes | map(.path) | join(",")')" = "docs/recipes/a-first.md,docs/recipes/b-second.md" ] \
+  && [ "$(last '.body.recipes[1].markdown')" = "$(cat docs/recipes/b-second.md)" ] \
+  && grep -q "and 2 recipe(s) from docs/recipes" "$WORK/stdout" \
+  && pass "docs/recipes/*.md sent as recipes by default, sorted, .md only" || fail "default recipes"
+printf -- '---\ntitle: C\n---\n' > other-recipes/c.md
+printf -- '---\ntitle: N\n---\n' > other-recipes/nested/n.md
+run DOCS_TOKEN=good-token DOCS_SOURCE_KEY=rc-env DOCS_VERSION=1.0.0 DOCS_RECIPES=other-recipes/ \
+  && [ "$(last '.body.recipes | map(.path) | join(",")')" = "other-recipes/c.md" ] \
+  && pass "recipes input (env): another directory, not recursive" || fail "recipes env"
+run_args DOCS_TOKEN=good-token DOCS_SOURCE_KEY=rc-flag DOCS_VERSION=1.0.0 -- --recipes other-recipes \
+  && [ "$(last '.body.recipes | length')" = 1 ] && pass "--recipes flag" || fail "--recipes flag"
+run_args DOCS_TOKEN=good-token DOCS_SOURCE_KEY=rc-flag2 DOCS_VERSION=1.0.0 -- --recipes=other-recipes \
+  && [ "$(last '.body.recipes | length')" = 1 ] && pass "--recipes=dir form" || fail "--recipes= form"
+run DOCS_TOKEN=good-token DOCS_SOURCE_KEY=rc-none DOCS_VERSION=1.0.0 DOCS_RECIPES=none \
+  && [ "$(last '.body | has("recipes")')" = false ] && pass "recipes none: none sent" || fail "recipes none"
+run DOCS_DRY_RUN=true DOCS_SOURCE_KEY=rc-dry DOCS_VERSION=1.0.0 && grep -q "2 recipe(s) from docs/recipes" "$WORK/stdout" \
+  && grep -q '"path": "docs/recipes/a-first.md"' "$WORK/stdout" && grep -q '"markdown": "<' "$WORK/stdout" \
+  && pass "dry run lists the recipes, not their text" || fail "recipes dry run"
+if run DOCS_TOKEN=good-token DOCS_VERSION=1.0.0 DOCS_RECIPES=missing-dir; then fail "missing recipes dir should fail"; else grep -q "recipes directory not found" "$WORK/stderr" && pass "missing recipes directory" || fail "missing recipes message"; fi
+mkdir -p empty-recipes
+if run DOCS_TOKEN=good-token DOCS_VERSION=1.0.0 DOCS_RECIPES=empty-recipes; then fail "empty recipes dir should fail"; else grep -q "no \*.md recipes" "$WORK/stderr" && pass "explicit recipes directory with no .md" || fail "empty recipes message"; fi
+printf -- '---\ntitle: X\n---\nBROKEN\n' > other-recipes/c.md
+if run DOCS_TOKEN=good-token DOCS_SOURCE_KEY=rc-422 DOCS_VERSION=1.0.0 DOCS_RECIPES=other-recipes; then fail "422 should fail"; else grep -q "a recipe does not parse" "$WORK/stderr" && grep -q "unknown operation" "$WORK/stderr" && pass "422: recipe diagnostics shown, step fails" || fail "422 message"; fi
+rm -r docs other-recipes empty-recipes
+run DOCS_TOKEN=good-token DOCS_SOURCE_KEY=rc-absent DOCS_VERSION=1.0.0 && [ "$(last '.body | has("recipes")')" = false ] \
+  && pass "no docs/recipes: no recipes sent" || fail "no recipes dir"
+
 rm package.json
 if run DOCS_TOKEN=good-token; then fail "no key should fail"; else grep -q "source-key is required" "$WORK/stderr" && pass "no package.json: key required" || fail "key message"; fi
 run DOCS_TOKEN=good-token DOCS_SOURCE_KEY=spec-only DOCS_REF_NAME=main && [ "$(output version)" = 0.9.0 ] \
