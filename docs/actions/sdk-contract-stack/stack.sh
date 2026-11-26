@@ -2,7 +2,7 @@
 # The SDK contract stack (docs-platform-0 15.6): node-auth-service,
 # node-service-authz and node-service-docs, run from source against throwaway
 # Postgres / Redis / Mongo / OpenFGA containers, with the auth and authz specs
-# published to docs and ingested. The SDK repos' contract suites run against it.
+# and the docs GraphQL schema published to docs and ingested. The SDK repos' contract suites run against it.
 #
 #   stack.sh up      start everything, publish the specs, write the env file
 #   stack.sh down    stop the services and remove the containers
@@ -106,20 +106,29 @@ dev_token() {
 }
 
 publish_spec() {
-  # $1 = source key, $2 = display name, $3 = spec file, $4 = token
-  local key="$1" name="$2" spec="$3" token="$4" version body code
-  version=$(node -e 'process.stdout.write(String(require(process.argv[1]).info.version))' "$spec")
+  # $1 = source key, $2 = display name, $3 = spec file, $4 = token,
+  # $5 = format (openapi: the spec's info.version; graphql: an SDL file, the
+  # version of the package.json next to it, POSTed to /graphql)
+  local key="$1" name="$2" spec="$3" token="$4" format="${5:-openapi}" version body code
+  if [ "$format" = graphql ]; then
+    version=$(node -e 'process.stdout.write(String(require(process.argv[1]).version))' "$(dirname "$spec")/../package.json")
+  else
+    version=$(node -e 'process.stdout.write(String(require(process.argv[1]).info.version))' "$spec")
+  fi
   body="$STATE_DIR/publish-$key.json"
   node -e '
-    const [spec, name, space, out] = process.argv.slice(1)
-    const doc = JSON.parse(require("fs").readFileSync(spec, "utf8"))
-    require("fs").writeFileSync(out, JSON.stringify({ kind: "service", name, docSpaceKey: space, format: "openapi", document: doc }))
-  ' "$spec" "$name" "$DOC_SPACE" "$body"
+    const fs = require("fs")
+    const [spec, name, space, format, out] = process.argv.slice(1)
+    const document = format === "graphql"
+      ? { sdl: fs.readFileSync(spec, "utf8"), endpoint: "/graphql" }
+      : JSON.parse(fs.readFileSync(spec, "utf8"))
+    fs.writeFileSync(out, JSON.stringify({ kind: "service", name, docSpaceKey: space, format, document }))
+  ' "$spec" "$name" "$DOC_SPACE" "$format" "$body"
   code=$(curl -s -o "$STATE_DIR/publish-$key.out" -w '%{http_code}' -X PUT \
     "http://localhost:$DOCS_PORT/sources/$key/versions/$version" \
     -H "authorization: Bearer $token" -H 'content-type: application/json' --data-binary "@$body")
   case "$code" in
-    200|201) log "published $key@$version ($code)" ;;
+    200|201) log "published $key@$version ($format, $code)" ;;
     *) cat "$STATE_DIR/publish-$key.out" >&2; die "publishing $key@$version failed ($code)" ;;
   esac
   wait_for "docs sdk-model $key@$version" "200" "http://localhost:$DOCS_PORT/sources/$key/versions/$version/sdk-model"
@@ -241,10 +250,12 @@ up() {
      ON CONFLICT DO NOTHING" >/dev/null
 
   # --- publish auth + authz to docs, as their CI does on merge (D1) ---
-  local publish auth_version authz_version
+  local publish auth_version authz_version docs_version
   publish=$(dev_token svc-sdk-contract 'docs:publish')
   auth_version=$(publish_spec node-auth-service 'Auth service' "$AUTH_DIR/openapi.json" "$publish")
   authz_version=$(publish_spec node-service-authz 'Authorization service' "$AUTHZ_DIR/openapi.json" "$publish")
+  # The docs service's own read-only GraphQL API (D3), which the docs SDKs call.
+  docs_version=$(publish_spec node-service-docs 'Docs GraphQL API' "$DOCS_DIR/docs/schema.graphql" "$publish" graphql)
 
   cat >"$ENV_FILE" <<EOF
 AGRIPPA_CONTRACT_AUTH_URL=http://localhost:$AUTH_PORT
@@ -252,6 +263,7 @@ AGRIPPA_CONTRACT_AUTHZ_URL=http://localhost:$AUTHZ_PORT
 AGRIPPA_CONTRACT_DOCS_URL=http://localhost:$DOCS_PORT
 AGRIPPA_CONTRACT_AUTH_VERSION=$auth_version
 AGRIPPA_CONTRACT_AUTHZ_VERSION=$authz_version
+AGRIPPA_CONTRACT_DOCS_VERSION=$docs_version
 AGRIPPA_CONTRACT_EMAIL=$FIXTURE_EMAIL
 AGRIPPA_CONTRACT_PASSWORD=$FIXTURE_PASSWORD
 AGRIPPA_CONTRACT_ORG_KEY=$FIXTURE_ORG_KEY

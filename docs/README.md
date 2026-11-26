@@ -141,8 +141,9 @@ composite action (OpenAPI and GraphQL SDL).
 stack the SDK repos' **contract suites** run against (docs-platform-0 15.6):
 `node-auth-service`, `node-service-authz` and `node-service-docs`, checked out
 and run from source next to throwaway Postgres, Redis, Mongo and OpenFGA
-containers. It then publishes the auth and authz specs to docs (as their CI
-does on merge, D1) and waits for ingestion, and seeds a fixture: a platform
+containers. It then publishes the auth and authz specs and docs' own GraphQL
+schema (`docs/schema.graphql`, D3) to docs (as their CI does on merge, D1) and
+waits for ingestion, and seeds a fixture: a platform
 admin (`system.admin`) who owns one organization. Everything is `localhost`;
 no cloud host is ever touched.
 
@@ -171,7 +172,7 @@ prints every step's env), so source the file in the step that runs the suite:
 | Variable | Value |
 | --- | --- |
 | `AGRIPPA_CONTRACT_AUTH_URL` / `_AUTHZ_URL` / `_DOCS_URL` | `http://localhost:4200` / `:4201` / `:4370` |
-| `AGRIPPA_CONTRACT_AUTH_VERSION` / `_AUTHZ_VERSION` | the published spec versions (`info.version`) |
+| `AGRIPPA_CONTRACT_AUTH_VERSION` / `_AUTHZ_VERSION` / `_DOCS_VERSION` | the published versions (`info.version`; docs: its `package.json` version) |
 | `AGRIPPA_CONTRACT_EMAIL` / `_PASSWORD` | the fixture platform admin (a generated test value; the password is env-file only) |
 | `AGRIPPA_CONTRACT_ORG_KEY` | the `org-key` of the organization it owns |
 
