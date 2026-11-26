@@ -6,7 +6,7 @@
 #   1.1.0 → 2.0.0 removes an operation   → major in all three (the slice criterion)
 #
 # Needs a running stack: STACK_SCRIPT (stack.sh) and ENV_FILE (its env file).
-# shellcheck disable=SC2015 # `check && pass || fail`: pass only echoes, never fails
+# shellcheck disable=SC2015,SC2016 # `check && pass || fail`: pass only echoes; backticks are literal Markdown
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PLAN="$HERE/../plan.mjs"
