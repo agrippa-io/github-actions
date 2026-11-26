@@ -1,0 +1,88 @@
+name: SDK contract stack
+description: >
+  Start the local stack the SDK contract suites run against (docs-platform-0
+  15.6): node-auth-service, node-service-authz and node-service-docs, checked
+  out and run from source against throwaway Postgres / Redis / Mongo /
+  OpenFGA containers, with the auth and authz specs published to docs and
+  ingested, and a platform-admin fixture user who owns one organization.
+  Exports the AGRIPPA_CONTRACT_* variables to the rest of the job, except the
+  fixture password, which stays in the env file: source that file in the step
+  that runs the suite. Everything is localhost: no cloud host is ever touched.
+
+inputs:
+  token:
+    description: 'A token that can read agrippa-io/node-auth-service, node-service-authz and node-service-docs (e.g. secrets.RELEASE_TOKEN). The job''s GITHUB_TOKEN only reads its own repo.'
+    required: true
+  npm-token:
+    description: 'NPM token for the services'' private @agrippa-io dependencies.'
+    required: true
+  auth-ref:
+    description: 'node-auth-service ref to run.'
+    required: false
+    default: main
+  authz-ref:
+    description: 'node-service-authz ref to run.'
+    required: false
+    default: main
+  docs-ref:
+    description: 'node-service-docs ref to run.'
+    required: false
+    default: develop
+  path:
+    description: 'Workspace-relative directory for the checkouts, logs and env file.'
+    required: false
+    default: .contract-stack
+
+outputs:
+  env-file:
+    description: 'The env file the stack wrote, password included: `set -a; . <env-file>; set +a` in the step that runs the suite.'
+    value: ${{ steps.up.outputs.env-file }}
+  script:
+    description: 'Path of stack.sh, for `logs` / `down` in later steps.'
+    value: ${{ steps.up.outputs.script }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: agrippa-io/node-auth-service
+        ref: ${{ inputs.auth-ref }}
+        token: ${{ inputs.token }}
+        path: ${{ inputs.path }}/src/node-auth-service
+    - uses: actions/checkout@v4
+      with:
+        repository: agrippa-io/node-service-authz
+        ref: ${{ inputs.authz-ref }}
+        token: ${{ inputs.token }}
+        path: ${{ inputs.path }}/src/node-service-authz
+    - uses: actions/checkout@v4
+      with:
+        repository: agrippa-io/node-service-docs
+        ref: ${{ inputs.docs-ref }}
+        token: ${{ inputs.token }}
+        path: ${{ inputs.path }}/src/node-service-docs
+
+    - uses: actions/setup-node@v4
+      with:
+        node-version-file: ${{ inputs.path }}/src/node-auth-service/.nvmrc
+        registry-url: https://registry.npmjs.org
+        scope: '@agrippa-io'
+
+    - id: up
+      name: Start the stack
+      shell: bash
+      env:
+        NODE_AUTH_TOKEN: ${{ inputs.npm-token }}
+        STACK_STATE_DIR: ${{ github.workspace }}/${{ inputs.path }}
+        STACK_AUTH_DIR: ${{ github.workspace }}/${{ inputs.path }}/src/node-auth-service
+        STACK_AUTHZ_DIR: ${{ github.workspace }}/${{ inputs.path }}/src/node-service-authz
+        STACK_DOCS_DIR: ${{ github.workspace }}/${{ inputs.path }}/src/node-service-docs
+      run: |
+        echo "script=$GITHUB_ACTION_PATH/stack.sh" >> "$GITHUB_OUTPUT"
+        "$GITHUB_ACTION_PATH/stack.sh" up
+        env_file="$STACK_STATE_DIR/env"
+        # The fixture password is a throwaway test value, but GitHub prints every
+        # step's env: it stays in the env file only.
+        grep -v '^AGRIPPA_CONTRACT_PASSWORD=' "$env_file" >> "$GITHUB_ENV"
+        echo "env-file=$env_file" >> "$GITHUB_OUTPUT"
