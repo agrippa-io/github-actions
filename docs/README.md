@@ -5,7 +5,7 @@ docs-platform-0).
 
 ## `publish-docs`
 
-`agrippa-io/github-actions/docs/actions/publish-docs@v1`: publishes a repo's
+`agrippa-io/github-actions/docs/actions/publish-docs@v1.13.0`: publishes a repo's
 spec (OpenAPI, or a GraphQL schema) to the docs API with
 `PUT /sources/:key/versions/:version` (node-service-docs
 `src/routes/sources/README.md`). Services **push** their docs from CI on merge;
@@ -36,11 +36,12 @@ no-op (200, success), different content under the same version fails (409).
 | `name` | spec `info.title` | display name |
 | `doc-space-key` / `doc-space-id` | | doc space, needed on a source's first publish |
 | `spec-path` | `openapi.json` | spec file |
-| `format` | `openapi` | `openapi` or `graphql` (implied by the next two) |
+| `format` | `openapi` | `openapi`, `graphql` (implied by the next two), `asyncapi`, `typedoc` or `manifest`: the document at `spec-path` is sent as is |
 | `graphql` | | GraphQL SDL file, e.g. `schema.graphql`: publishes it instead of `spec-path` |
 | `graphql-url` | | GraphQL endpoint to introspect instead, **local environment only** |
 | `graphql-endpoint` | `graphql-url` path, else `/graphql` | path the operations are POSTed to |
 | `events` | `docs/events.json` when it exists | the service's event manifest (topics it produces / consumes); `none` sends none |
+| `recipes` | `docs/recipes` when it has `*.md` | directory of repo-authored recipes, sent as `recipes`; `none` sends none |
 | `working-directory` | `.` | where `package.json` and the spec live |
 | `dry-run` | `false` | print the request, send nothing |
 
@@ -50,6 +51,10 @@ no-op (200, success), different content under the same version fails (409).
 | `version` | the version label used |
 | `status` | HTTP status of the publish call |
 
+Most repos don't call the action directly: they call the reusable
+[`publish-docs.yml` workflow](#reusable-workflow-publish-docsyml) below, which
+builds the document first and dry-runs until a docs host is configured.
+
 ```yaml
 on:
   push:
@@ -57,13 +62,13 @@ on:
 
 jobs:
   publish-docs:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
-      - uses: agrippa-io/github-actions/docs/actions/publish-docs@v1
+      - uses: agrippa-io/github-actions/docs/actions/publish-docs@v1.13.0
         with:
           api-url: ${{ vars.DOCS_API_URL }}
-          token-url: ${{ vars.OIDC_TOKEN_URL }}
+          token-url: ${{ vars.DOCS_TOKEN_URL }}
           client-id: ${{ vars.DOCS_PUBLISH_CLIENT_ID }}
           client-secret: ${{ secrets.DOCS_PUBLISH_CLIENT_SECRET }}
           doc-space-key: platform
@@ -126,8 +131,65 @@ DOCS_API_URL=http://localhost:4370/v1 DOCS_TOKEN=… \
 DOCS_API_URL=… DOCS_TOKEN=… publish.sh --graphql-url http://localhost:4370/v1/graphql
 ```
 
-Recipes and error catalogs ride along once the docs API accepts them (later
-docs-platform-0 slices); today only the spec is sent.
+### Recipes
+
+A repo keeps its use-case guides as Markdown in `docs/recipes/*.md`
+(node-service-docs `src/lib/repoRecipes`, docs-platform-0 8.2); the action sends
+every `*.md` in that directory (sorted, not recursive) as
+`recipes: [{ path, markdown }]` with the spec (14.1). The docs service parses
+each one and checks every operation it references against the document being
+published: a broken recipe is a **422** and nothing is stored, so the step fails
+with the diagnostics. `recipes: other/dir` picks another directory (it must
+hold at least one `*.md`), `recipes: none` sends none. The error catalog rides
+in the OpenAPI document itself (`x-error-catalog`, `x-errors`).
+
+## Reusable workflow `publish-docs.yml`
+
+`agrippa-io/github-actions/.github/workflows/publish-docs.yml@v1.13.0`
+(docs-platform-0 14.1) is how every service, library and application publishes:
+check out, install (`setup-node-project`), run `build-command` to write the
+document, then `publish-docs`. Call it from `ci.yml` after the `ci-ok` gate, on
+pushes only:
+
+```yaml
+  publish-docs:
+    needs: ci-ok
+    if: ${{ github.event_name == 'push' }}
+    uses: agrippa-io/github-actions/.github/workflows/publish-docs.yml@v1.13.0
+    with:
+      build-command: npm run openapi:generate
+    secrets:
+      npm-token: ${{ secrets.NPM_TOKEN }}
+      docs-client-secret: ${{ secrets.DOCS_PUBLISH_CLIENT_SECRET }}
+```
+
+| Repo | `kind` | `format` | `spec-path` | `build-command` |
+| --- | --- | --- | --- | --- |
+| service (`node-*`) | `service` | `openapi` | `openapi.json` | `npm run openapi:generate` |
+| library (`packages/*`) | `library` | `typedoc` | `docs/typedoc.json` | `npm run docs:typedoc` |
+| application (`apps/*`) | `application` | `manifest` | `docs/app-manifest.json` | (committed) |
+| `platform-contracts` | `library` | `asyncapi` | `dist/asyncapi.json` | `npm run build` |
+
+**Where it publishes** comes from the caller's variables, so a repo is wired
+once and starts publishing when the docs host exists:
+
+| Setting | Meaning |
+| --- | --- |
+| `vars.DOCS_API_URL` (or input `api-url`) | docs API base, e.g. `https://api.<env>/docs/v1` |
+| `vars.DOCS_TOKEN_URL`, `vars.DOCS_PUBLISH_CLIENT_ID` | client-credentials token endpoint and client id |
+| secret `docs-client-secret` (or `docs-token`) | the client secret (or a ready `docs:publish` token) |
+
+`dry-run: auto` (default) publishes when the URL and credentials are all set,
+and otherwise builds the document and validates the request without sending
+it, with a notice in the run. `true` always dry-runs; `false` fails when there
+is no URL. All of the action's inputs (`kind`, `format`, `spec-path`,
+`graphql`, `graphql-endpoint`, `events`, `recipes`, `source-key`, `name`,
+`version`, `doc-space-key` (default `platform`), `working-directory`) pass
+through, plus `install` (default `true`), `build-command`, `npm-scope`,
+`node-version-file` and `package-manager`. Outputs: `outcome`, `version`.
+
+The workflow pins `publish-docs` and `setup-node-project` at its own release
+tag, so `test-publish-docs.yml` runs it (job `reusable`) on every tag push.
 
 **Tests:** `bash docs/actions/publish-docs/test/run.sh` runs the script against
 a local stub API (python3, jq, curl), which also plays a GraphQL server

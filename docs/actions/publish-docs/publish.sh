@@ -19,12 +19,16 @@
 #   DOCS_EVENTS       the event manifest (docs-platform-0 16.3): topics the
 #                     service produces / consumes. Default: docs/events.json
 #                     when it exists; `none` sends no manifest
+#   DOCS_RECIPES      a directory of repo-authored recipes (docs-platform-0 8.2,
+#                     14.1): every *.md in it is sent as recipes [{ path, markdown }].
+#                     Default: docs/recipes when it has any; `none` sends none
 #   DOCS_GIT_SHA      commit (default GITHUB_SHA)
 #   DOCS_REF_NAME     branch (default GITHUB_REF_NAME)
 #   DOCS_DRY_RUN      true → print the request, send nothing
 # The same GraphQL settings and dry run also come as flags, for local use:
 #   publish.sh --graphql schema.graphql | --graphql-url http://localhost:4370/v1/graphql
-#              [--graphql-endpoint /graphql] [--events docs/events.json] [--dry-run]
+#              [--graphql-endpoint /graphql] [--events docs/events.json]
+#              [--recipes docs/recipes] [--dry-run]
 # Writes `outcome`, `version`, `status` to $GITHUB_OUTPUT when set.
 set -euo pipefail
 
@@ -35,16 +39,18 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --graphql|--graphql-url|--graphql-endpoint|--events)
+    --graphql|--graphql-url|--graphql-endpoint|--events|--recipes)
       [ $# -ge 2 ] || die "$1 needs a value"
       case "$1" in
         --graphql) DOCS_GRAPHQL="$2" ;;
         --graphql-url) DOCS_GRAPHQL_URL="$2" ;;
         --graphql-endpoint) DOCS_GRAPHQL_ENDPOINT="$2" ;;
         --events) DOCS_EVENTS="$2" ;;
+        --recipes) DOCS_RECIPES="$2" ;;
       esac
       shift 2 ;;
     --events=*) DOCS_EVENTS="${1#*=}"; shift ;;
+    --recipes=*) DOCS_RECIPES="${1#*=}"; shift ;;
     --graphql=*) DOCS_GRAPHQL="${1#*=}"; shift ;;
     --graphql-url=*) DOCS_GRAPHQL_URL="${1#*=}"; shift ;;
     --graphql-endpoint=*) DOCS_GRAPHQL_ENDPOINT="${1#*=}"; shift ;;
@@ -148,6 +154,25 @@ if [ -n "$EVENTS" ]; then
     || die "event manifest must be a JSON object with produces / consumes arrays: $EVENTS"
 fi
 
+# Repo-authored recipes (docs-platform-0 8.2, 14.1): explicit directory,
+# `none`, or the docs/recipes convention. Each *.md (sorted, not recursive) is
+# sent as { path, markdown }, path relative to the working directory; the docs
+# service parses them and checks every operation they reference (422).
+RECIPES_DIR="${DOCS_RECIPES:-}"
+if [ -z "$RECIPES_DIR" ] && compgen -G "docs/recipes/*.md" > /dev/null; then RECIPES_DIR=docs/recipes; fi
+[ "$RECIPES_DIR" = none ] && RECIPES_DIR=""
+RECIPES="$TMP/recipes.json"
+echo '[]' > "$RECIPES"
+if [ -n "$RECIPES_DIR" ]; then
+  RECIPES_DIR="${RECIPES_DIR%/}"
+  [ -d "$RECIPES_DIR" ] || die "recipes directory not found: $RECIPES_DIR"
+  compgen -G "$RECIPES_DIR/*.md" > /dev/null || die "no *.md recipes in $RECIPES_DIR"
+  for f in "$RECIPES_DIR"/*.md; do
+    jq -n --arg path "$f" --rawfile markdown "$f" '{ path: $path, markdown: $markdown }'
+  done | jq -s '.' > "$RECIPES"
+fi
+RECIPE_COUNT="$(jq 'length' "$RECIPES")"
+
 [ -f "$SPEC" ] || die "spec not found: $SPEC"
 jq -e 'type == "object"' "$SPEC" > /dev/null 2>&1 || die "spec is not a JSON object: $SPEC"
 
@@ -178,20 +203,23 @@ jq -n \
   --arg kind "$KIND" --arg name "$NAME" --arg format "$FORMAT" \
   --arg spaceKey "${DOCS_SPACE_KEY:-}" --arg spaceId "${DOCS_SPACE_ID:-}" \
   --arg sha "$SHA" --slurpfile doc "$SPEC" \
-  --slurpfile events "${EVENTS:-/dev/null}" '
+  --slurpfile events "${EVENTS:-/dev/null}" --slurpfile recipes "$RECIPES" '
   { kind: $kind, name: $name, format: $format, document: $doc[0] }
   + (if $spaceKey != "" then { docSpaceKey: $spaceKey } else {} end)
   + (if $spaceId != "" then { docSpaceId: $spaceId } else {} end)
   + (if ($sha | test("^[0-9a-f]{7,40}$")) then { gitSha: $sha } else {} end)
-  + (if ($events | length) > 0 then { events: $events[0] } else {} end)' > "$BODY"
+  + (if ($events | length) > 0 then { events: $events[0] } else {} end)
+  + (if ($recipes[0] | length) > 0 then { recipes: $recipes[0] } else {} end)' > "$BODY"
 
 URL="${DOCS_API_URL%/}/sources/$KEY/versions/$VERSION"
 out version "$VERSION"
 
 if [ "${DOCS_DRY_RUN:-false}" = "true" ]; then
   echo "publish-docs (dry run): PUT $URL"
-  jq '.document = "<\(.document | tostring | length) bytes>"' "$BODY"
+  jq '.document = "<\(.document | tostring | length) bytes>"
+    | if has("recipes") then .recipes |= map({ path, markdown: "<\(.markdown | length) bytes>" }) else . end' "$BODY"
   if [ -n "$EVENTS" ]; then echo "publish-docs (dry run): events from $EVENTS"; fi
+  if [ "$RECIPE_COUNT" -gt 0 ]; then echo "publish-docs (dry run): $RECIPE_COUNT recipe(s) from $RECIPES_DIR"; fi
   out outcome dry-run
   exit 0
 fi
@@ -215,8 +243,9 @@ STATUS="$(curl -sS -o "$RESP" -w '%{http_code}' -X PUT "$URL" \
 out status "$STATUS"
 
 case "$STATUS" in
-  201) echo "publish-docs: published $KEY@$VERSION${EVENTS:+ with events from $EVENTS}"; out outcome created ;;
+  201) echo "publish-docs: published $KEY@$VERSION${EVENTS:+ with events from $EVENTS}${RECIPES_DIR:+ and $RECIPE_COUNT recipe(s) from $RECIPES_DIR}"; out outcome created ;;
   200) echo "publish-docs: $KEY@$VERSION already published with the same content (no-op)"; out outcome unchanged ;;
+  422) cat "$RESP" >&2; die "$KEY@$VERSION was refused: a recipe does not parse or references an operation that does not exist (see diagnostics above)" ;;
   409) cat "$RESP" >&2; die "$KEY@$VERSION is already published with different content or events (versions are immutable; bump the version)" ;;
   *) cat "$RESP" >&2; die "PUT $URL answered $STATUS" ;;
 esac
