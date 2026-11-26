@@ -7,6 +7,10 @@
 #   stack.sh up      start everything, publish the specs, write the env file
 #   stack.sh down    stop the services and remove the containers
 #   stack.sh logs    print the service logs
+#   stack.sh publish <key> <openapi.json>
+#                    publish one more spec (version: its info.version) to the
+#                    running stack's docs service and wait for its ingest, e.g. a
+#                    fixture for the SDK release planner (15.7)
 #
 # Local stack only: every URL it writes is localhost, and it never touches a
 # cloud host. See README.md for the variables.
@@ -285,9 +289,19 @@ down() {
   log 'stack down'
 }
 
+publish() {
+  [ $# -eq 2 ] || die "usage: stack.sh publish <source key> <openapi.json>"
+  [ -f "$2" ] || die "spec not found: $2"
+  local token
+  token=$(dev_token svc-sdk-contract 'docs:publish')
+  publish_spec "$1" "$1" "$2" "$token"
+  echo
+}
+
 case "${1:-}" in
   up) up ;;
   down) down ;;
   logs) print_logs ;;
-  *) echo "usage: $0 up|down|logs" >&2; exit 2 ;;
+  publish) shift; publish "$@" ;;
+  *) echo "usage: $0 up|down|logs|publish <key> <openapi.json>" >&2; exit 2 ;;
 esac

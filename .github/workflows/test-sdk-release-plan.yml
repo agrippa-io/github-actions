@@ -1,0 +1,82 @@
+name: test-sdk-release-plan
+
+# Tests for docs/actions/sdk-release-plan (docs-platform-0 15.7):
+#   unit  plan.mjs against a fake docs service, 100% line / branch / function gate
+#   live  the planner against a real node-service-docs (the sdk-contract-stack from
+#         this checkout): three versions of a fixture spec, an added operation is a
+#         minor and a removed one a major, in a TypeScript-, Python- and Java-shaped repo.
+
+on:
+  pull_request:
+    paths: ['docs/actions/sdk-release-plan/**', 'docs/actions/sdk-contract-stack/**', '.github/workflows/test-sdk-release-plan.yml']
+  push:
+    branches: [main]
+    paths: ['docs/actions/sdk-release-plan/**', 'docs/actions/sdk-contract-stack/**', '.github/workflows/test-sdk-release-plan.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: sdk-release-plan unit
+    runs-on: ${{ vars.RUNNER || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: shellcheck
+        run: shellcheck docs/actions/sdk-release-plan/test/live.sh docs/actions/sdk-contract-stack/stack.sh
+      - name: Unit tests (100% coverage)
+        run: >-
+          node --test --experimental-test-coverage
+          --test-coverage-include='docs/actions/sdk-release-plan/plan.mjs'
+          --test-coverage-lines=100 --test-coverage-branches=100 --test-coverage-functions=100
+          docs/actions/sdk-release-plan/test/plan.test.mjs
+
+  live:
+    name: sdk-release-plan live
+    runs-on: ${{ vars.RUNNER || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: stack
+        uses: ./docs/actions/sdk-contract-stack
+        with:
+          token: ${{ secrets.RELEASE_TOKEN }}
+          npm-token: ${{ secrets.NPM_TOKEN }}
+      - name: Planner against the live docs service
+        env:
+          STACK_SCRIPT: ${{ steps.stack.outputs.script }}
+          ENV_FILE: ${{ steps.stack.outputs.env-file }}
+        run: bash docs/actions/sdk-release-plan/test/live.sh
+      - name: Fixture repo for the action
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/action/models"
+          echo '{ "sdk-release-fixture": { "version": "0.9.0" } }' > "$RUNNER_TEMP/action/sdks.json"
+          curl -fsS -o "$RUNNER_TEMP/action/models/sdk-release-fixture.json" \
+            http://localhost:4370/sources/sdk-release-fixture/versions/1.0.0/sdk-model
+      - name: The action itself (plan only)
+        id: plan
+        uses: ./docs/actions/sdk-release-plan
+        with:
+          docs-url: http://localhost:4370
+          version: 2.0.0
+          manifest: ${{ runner.temp }}/action/sdks.json
+          models: ${{ runner.temp }}/action/models
+          changelog: ${{ runner.temp }}/action/CHANGELOG.md
+        # The fixture SDK, pinned at 1.0.0: 1.0.0 → 2.0.0 drops getPet, a major.
+      - name: Check the action outputs
+        env:
+          CHANGED: ${{ steps.plan.outputs.changed }}
+          BUMP: ${{ steps.plan.outputs.bump }}
+          PLAN: ${{ steps.plan.outputs.plan }}
+        run: |
+          set -euo pipefail
+          [ "$CHANGED" = true ] && [ "$BUMP" = major ] || { echo "changed=$CHANGED bump=$BUMP"; exit 1; }
+          [ "$(jq -r '.sdks[0].to' "$PLAN")" = 1.0.0 ]
+          [ "$(jq -r '."sdk-release-fixture".version' "$RUNNER_TEMP/action/sdks.json")" = 0.9.0 ]   # plan only: nothing written
+      - if: failure() && steps.stack.outputs.script != ''
+        run: ${{ steps.stack.outputs.script }} logs
+      - if: always() && steps.stack.outputs.script != ''
+        run: ${{ steps.stack.outputs.script }} down
