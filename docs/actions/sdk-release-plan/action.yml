@@ -1,0 +1,78 @@
+name: SDK release plan
+description: >
+  Plan (and with write, apply) the next release of a generated SDK repo
+  (docs-platform-0 15.7). For each SDK in the manifest it fetches the source's
+  client model from the docs service, compares it with the pinned model, and
+  takes the version bump from the docs service's version diff (2.6):
+  breaking → major, any other change → minor, a model change with no API change →
+  patch, no change → no release. The same planner runs in sdk-typescript,
+  sdk-python and sdk-java, so a docs change gets the same bump in every
+  language. With write it stores the new models, bumps the manifest versions and
+  adds a CHANGELOG section; regenerating the packages is the caller's job.
+
+inputs:
+  docs-url:
+    description: 'Docs API base, e.g. http://localhost:4370 (local) or <gateway>/docs/v1.'
+    required: true
+  token:
+    description: 'Optional docs read token, for tenant / internal doc spaces.'
+    required: false
+    default: ''
+  version:
+    description: 'Docs version to release from: a version label or latest.'
+    required: false
+    default: latest
+  manifest:
+    description: 'The SDK manifest: { "<source key>": { "version": "x.y.z", "package": "<name>" } }.'
+    required: false
+    default: sdks.json
+  models:
+    description: 'Directory of the pinned client models (<source key>.json).'
+    required: false
+    default: models
+  changelog:
+    description: 'The changelog the release section goes into.'
+    required: false
+    default: CHANGELOG.md
+  write:
+    description: 'true: write the models, manifest and changelog. false: plan only.'
+    required: false
+    default: 'false'
+  working-directory:
+    description: 'Directory the paths above are relative to.'
+    required: false
+    default: .
+
+outputs:
+  changed:
+    description: 'true when at least one SDK has a release.'
+    value: ${{ steps.plan.outputs.changed }}
+  bump:
+    description: 'The largest bump in the plan: none, patch, minor or major.'
+    value: ${{ steps.plan.outputs.bump }}
+  plan:
+    description: 'Path of the plan JSON (per SDK: from, to, bump, reason, changes).'
+    value: ${{ steps.plan.outputs.plan }}
+
+runs:
+  using: composite
+  steps:
+    - id: plan
+      name: Plan the SDK release
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        DOCS_TOKEN: ${{ inputs.token }}
+        DOCS_URL: ${{ inputs.docs-url }}
+        DOCS_VERSION: ${{ inputs.version }}
+        MANIFEST: ${{ inputs.manifest }}
+        MODELS: ${{ inputs.models }}
+        CHANGELOG: ${{ inputs.changelog }}
+        WRITE: ${{ inputs.write }}
+        PLAN_OUT: ${{ runner.temp }}/sdk-release-plan.json
+      run: |
+        set -euo pipefail
+        [ -n "$DOCS_TOKEN" ] && echo "::add-mask::$DOCS_TOKEN"
+        args=(--docs-url "$DOCS_URL" --version "$DOCS_VERSION" --manifest "$MANIFEST" --models "$MODELS" --changelog "$CHANGELOG" --plan-out "$PLAN_OUT")
+        [ "$WRITE" = true ] && args+=(--write)
+        node "$GITHUB_ACTION_PATH/plan.mjs" "${args[@]}"

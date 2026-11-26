@@ -211,6 +211,9 @@ set -a; . .contract-stack/env; set +a      # then run the SDK's contract suite
 `STACK_STATE_DIR` and `STACK_WAIT_SECONDS` override the defaults. `up` refuses
 a service port that is already taken. `logs` prints the last lines of each
 service log.
+`stack.sh publish <source key> <openapi.json>` publishes one more spec (its
+`info.version`) to the running stack's docs service and waits for ingest; the
+`sdk-release-plan` tests publish their fixture versions with it.
 
 What the seed does that no API does (on purpose, in a throwaway database only):
 runs auth's `seedSystemPoliciesAndRoles`, binds a `system.admin` policy to the
@@ -218,3 +221,85 @@ runs auth's `seedSystemPoliciesAndRoles`, binds a `system.admin` policy to the
 doesn't create it), makes the fixture user a system admin, and adds them to
 their organization as `organization.owner`. It also inserts the public
 `platform` doc space the specs are published into.
+
+## `sdk-release-plan`
+
+`agrippa-io/github-actions/docs/actions/sdk-release-plan@v1.12.0`: plans (and
+with `write: 'true'`, applies) the next release of a generated SDK repo
+(docs-platform-0 15.7, decision D10). One planner serves `sdk-typescript`,
+`sdk-python` and `sdk-java`, so a docs change gets **the same version bump in
+every language**.
+
+For each SDK in the manifest (`sdks.json`), in order:
+
+1. `GET <docs-url>/sources/<key>/versions/<version>/sdk-model`: the client model now.
+2. Compare it with the pinned `models/<key>.json`, byte for byte.
+3. Pick the bump:
+
+| Case | Bump |
+| --- | --- |
+| the model is unchanged | none: no release |
+| no pinned model yet (a new SDK) | first release, at the manifest version |
+| same docs version, different model (the generator changed) | patch |
+| the 2.6 diff (`GET /sources/<key>/diff?from=<pinned>&to=<new>`) says `breaking` | **major** |
+| the diff has any other change | minor |
+| the diff is empty | patch |
+| no diff (the old version isn't in this docs service, or it's down) | **major**: a major never breaks a client, a missed one does |
+
+A breaking change is a major even below 1.0 (`0.4.1` → `1.0.0`).
+
+4. With `write`: store the new model, set the manifest version, and add a
+   `## <date>` section to `CHANGELOG.md` (after `## Unreleased` when there is
+   one) with one `### <package> <version> (<bump>)` entry per released SDK,
+   listing the diff's changes (breaking ones first, up to 50).
+
+Regenerating the packages from the new models is the caller's job (each SDK
+repo's own `generate`), as are the release PR and the publish.
+
+**Manifest** (`sdks.json`, at the repo root):
+
+```json
+{
+  "node-auth-service": { "version": "0.1.0", "package": "@agrippa-io/sdk-node-auth-service" },
+  "node-service-authz": { "version": "0.1.0", "package": "@agrippa-io/sdk-node-service-authz" }
+}
+```
+
+`package` only names the SDK in the changelog and the summary (default: the key).
+
+| Input | Default | Meaning |
+| --- | --- | --- |
+| `docs-url` | (required) | docs API base (`http://localhost:4370`, or `<gateway>/docs/v1`) |
+| `token` | | optional docs read token (tenant / internal doc spaces) |
+| `version` | `latest` | the docs version to release from |
+| `manifest` / `models` / `changelog` | `sdks.json` / `models` / `CHANGELOG.md` | the repo's files |
+| `write` | `false` | `true` writes the models, manifest and changelog |
+| `working-directory` | `.` | the paths above are relative to it |
+
+| Output | Meaning |
+| --- | --- |
+| `changed` | `true` when some SDK has a release |
+| `bump` | the largest bump: `none` · `patch` · `minor` · `major` |
+| `plan` | path of the plan JSON (per SDK: `from`, `to`, `bump`, `reason`, `changes`) |
+
+The step summary has a table of every SDK with its bump and why. A model the
+docs service can't serve fails the step (nothing is written).
+
+```yaml
+- id: plan
+  uses: agrippa-io/github-actions/docs/actions/sdk-release-plan@v1.12.0
+  with:
+    docs-url: ${{ vars.DOCS_URL }}
+    write: 'true'
+- if: steps.plan.outputs.changed == 'true'
+  run: npm run generate   # then test and open the release PR
+```
+
+**Locally:** `node docs/actions/sdk-release-plan/plan.mjs --docs-url http://localhost:4370`
+from an SDK repo prints the plan; add `--write` to apply it.
+
+**Tests** (`test-sdk-release-plan.yml`): `test/plan.test.mjs` (unit, a fake docs
+service, 100% coverage) and `test/live.sh`, which publishes three versions of a
+fixture spec to a real docs service (the `sdk-contract-stack`) and checks an
+added operation gives a minor and a removed one a major, in a TypeScript-,
+Python- and Java-shaped repo.
