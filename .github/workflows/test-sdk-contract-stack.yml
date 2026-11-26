@@ -31,8 +31,12 @@ jobs:
           npm-token: ${{ secrets.NPM_TOKEN }}
 
       - name: Smoke
+        env:
+          ENV_FILE: ${{ steps.stack.outputs.env-file }}
         run: |
           set -euo pipefail
+          [ -z "${AGRIPPA_CONTRACT_PASSWORD:-}" ]   # never exported to the job
+          set -a; . "$ENV_FILE"; set +a
           for url in "$AGRIPPA_CONTRACT_AUTH_URL" "$AGRIPPA_CONTRACT_AUTHZ_URL" "$AGRIPPA_CONTRACT_DOCS_URL"; do
             curl -fsS "$url/health" >/dev/null
           done
@@ -43,8 +47,8 @@ jobs:
           key=$(curl -fsS -b jar -H "org-key: $AGRIPPA_CONTRACT_ORG_KEY" "$AGRIPPA_CONTRACT_AUTH_URL/organizations/current" | jq -r .key)
           [ "$key" = "$AGRIPPA_CONTRACT_ORG_KEY" ]
 
-      - if: failure()
+      - if: failure() && steps.stack.outputs.script != ''
         run: ${{ steps.stack.outputs.script }} logs
 
-      - if: always()
+      - if: always() && steps.stack.outputs.script != ''
         run: ${{ steps.stack.outputs.script }} down

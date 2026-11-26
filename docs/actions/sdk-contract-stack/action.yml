@@ -5,8 +5,9 @@ description: >
   out and run from source against throwaway Postgres / Redis / Mongo /
   OpenFGA containers, with the auth and authz specs published to docs and
   ingested, and a platform-admin fixture user who owns one organization.
-  Exports the AGRIPPA_CONTRACT_* variables to the rest of the job. Everything
-  is localhost: no cloud host is ever touched.
+  Exports the AGRIPPA_CONTRACT_* variables to the rest of the job, except the
+  fixture password, which stays in the env file: source that file in the step
+  that runs the suite. Everything is localhost: no cloud host is ever touched.
 
 inputs:
   token:
@@ -34,11 +35,11 @@ inputs:
 
 outputs:
   env-file:
-    description: 'The env file the stack wrote (also exported to GITHUB_ENV).'
+    description: 'The env file the stack wrote, password included: `set -a; . <env-file>; set +a` in the step that runs the suite.'
     value: ${{ steps.up.outputs.env-file }}
   script:
     description: 'Path of stack.sh, for `logs` / `down` in later steps.'
-    value: ${{ github.action_path }}/stack.sh
+    value: ${{ steps.up.outputs.script }}
 
 runs:
   using: composite
@@ -78,9 +79,10 @@ runs:
         STACK_AUTHZ_DIR: ${{ github.workspace }}/${{ inputs.path }}/src/node-service-authz
         STACK_DOCS_DIR: ${{ github.workspace }}/${{ inputs.path }}/src/node-service-docs
       run: |
+        echo "script=$GITHUB_ACTION_PATH/stack.sh" >> "$GITHUB_OUTPUT"
         "$GITHUB_ACTION_PATH/stack.sh" up
         env_file="$STACK_STATE_DIR/env"
-        # The fixture password is a throwaway test value, but keep it out of logs.
-        echo "::add-mask::$(sed -n 's/^AGRIPPA_CONTRACT_PASSWORD=//p' "$env_file")"
-        cat "$env_file" >> "$GITHUB_ENV"
+        # The fixture password is a throwaway test value, but GitHub prints every
+        # step's env: it stays in the env file only.
+        grep -v '^AGRIPPA_CONTRACT_PASSWORD=' "$env_file" >> "$GITHUB_ENV"
         echo "env-file=$env_file" >> "$GITHUB_OUTPUT"

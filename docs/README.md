@@ -162,16 +162,17 @@ production), so authz and docs verify real RS256 tokens against its JWKS.
 
 | Output | Meaning |
 | --- | --- |
-| `env-file` | the env file (also appended to `GITHUB_ENV`) |
+| `env-file` | the env file; everything but the password is also appended to `GITHUB_ENV` |
 | `script` | `stack.sh`, for `logs` / `down` later in the job |
 
-Exported to the job (the password is masked):
+Exported to the job; `AGRIPPA_CONTRACT_PASSWORD` is only in the env file (GitHub
+prints every step's env), so source the file in the step that runs the suite:
 
 | Variable | Value |
 | --- | --- |
 | `AGRIPPA_CONTRACT_AUTH_URL` / `_AUTHZ_URL` / `_DOCS_URL` | `http://localhost:4200` / `:4201` / `:4370` |
 | `AGRIPPA_CONTRACT_AUTH_VERSION` / `_AUTHZ_VERSION` | the published spec versions (`info.version`) |
-| `AGRIPPA_CONTRACT_EMAIL` / `_PASSWORD` | the fixture platform admin (a generated test value) |
+| `AGRIPPA_CONTRACT_EMAIL` / `_PASSWORD` | the fixture platform admin (a generated test value; the password is env-file only) |
 | `AGRIPPA_CONTRACT_ORG_KEY` | the `org-key` of the organization it owns |
 
 ```yaml
@@ -184,7 +185,11 @@ contract:
       with:
         token: ${{ secrets.RELEASE_TOKEN }}
         npm-token: ${{ secrets.NPM_TOKEN }}
-    - run: npm run test:contract
+    - env:
+        ENV_FILE: ${{ steps.stack.outputs.env-file }}
+      run: |
+        set -a; . "$ENV_FILE"; set +a
+        npm run test:contract
     - if: failure()
       run: ${{ steps.stack.outputs.script }} logs
 ```
