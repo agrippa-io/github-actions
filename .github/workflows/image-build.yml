@@ -12,6 +12,8 @@ name: image-build
 #   3. Sign the pushed digest with cosign, keyless: the certificate is minted
 #      from this run's GitHub OIDC token and logged in Rekor, so there is no
 #      signing key to store or rotate. The signature is verified right away.
+#      With an ECR mirror (below), the same build is pushed and signed there
+#      too, so the digest is identical in both registries.
 #   4. Dispatch `image-built` to agrippa-stack, whose `gitops-bump` workflow
 #      pins the digest in deploy/envs/e2e/images.yaml by pull request. Without
 #      a `dispatch-token` (or a `workload`) this step only logs a notice.
@@ -37,6 +39,15 @@ name: image-build
 #         workload: gateway  # registry.json name in agrippa-stack
 #       secrets:
 #         dispatch-token: ${{ secrets.GITOPS_DISPATCH_TOKEN }}
+#
+# ECR mirror (agrippa-stack deploy/registries.yaml `mirrors`, DC-4 4.4.1): off
+# unless `ecr-mirror` or the org variable AGRIPPA_ECR_MIRROR names the ECR
+# prefix (`<account>.dkr.ecr.<region>.amazonaws.com/<namespace>`; `none` turns
+# it off for one caller). Then the job
+# assumes the role in `ecr-role-arn` / variable AWS_ECR_ROLE_ARN with this
+# run's GitHub OIDC token (no AWS keys), pushes `<prefix>/<image-name>` with
+# the same tags in the same build, and signs + verifies it there. The ECR
+# repository must already exist (agrippa-stack deploy/REGISTRIES.md).
 #
 # Verify a signature (what the 3.6 admission policy checks):
 #
@@ -137,6 +148,21 @@ on:
         required: false
         type: string
         default: image-built
+      ecr-mirror:
+        description: 'ECR prefix to mirror to (`<account>.dkr.ecr.<region>.amazonaws.com/<namespace>`). Empty: the org variable AGRIPPA_ECR_MIRROR, else no mirror. `none`: no mirror, whatever the variable says.'
+        required: false
+        type: string
+        default: ''
+      ecr-region:
+        description: 'AWS region of the ECR mirror. Empty: the org variable AGRIPPA_ECR_REGION, else the region in `ecr-mirror`.'
+        required: false
+        type: string
+        default: ''
+      ecr-role-arn:
+        description: 'IAM role assumed with GitHub OIDC to push to the ECR mirror (an ARN, not a secret). Empty: the variable AWS_ECR_ROLE_ARN.'
+        required: false
+        type: string
+        default: ''
     secrets:
       buildkit-secret-value:
         description: 'Value of the BuildKit secret (typically an npm token). Required when `buildkit-secret-name` is set.'
@@ -157,6 +183,9 @@ on:
       ref:
         description: 'Image pinned by digest (`<image>@sha256:…`). Empty when `push` is false.'
         value: ${{ jobs.build.outputs.ref }}
+      mirror-ref:
+        description: 'The same digest in the ECR mirror (`<ecr-prefix>/<name>@sha256:…`). Empty without a mirror or when `push` is false.'
+        value: ${{ jobs.build.outputs.mirror-ref }}
 
 jobs:
   build:
@@ -171,6 +200,7 @@ jobs:
       tag: ${{ steps.meta.outputs.tag }}
       digest: ${{ steps.push.outputs.digest }}
       ref: ${{ steps.push.outputs.digest && format('{0}@{1}', steps.meta.outputs.image, steps.push.outputs.digest) || '' }}
+      mirror-ref: ${{ steps.push.outputs.digest && steps.meta.outputs.mirror-image && format('{0}@{1}', steps.meta.outputs.mirror-image, steps.push.outputs.digest) || '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -182,18 +212,40 @@ jobs:
           NAME: ${{ inputs.image-name || github.event.repository.name }}
           TAG: ${{ inputs.tag }}
           EXTRA_TAGS: ${{ inputs.extra-tags }}
+          ECR_MIRROR: ${{ inputs.ecr-mirror || vars.AGRIPPA_ECR_MIRROR }}
+          ECR_REGION: ${{ inputs.ecr-region || vars.AGRIPPA_ECR_REGION }}
+          ECR_ROLE_ARN: ${{ inputs.ecr-role-arn || vars.AWS_ECR_ROLE_ARN }}
         run: |
           set -euo pipefail
           # Registries want lowercase repository names; GitHub owners may not be.
           image="$(printf '%s/%s/%s' "$REGISTRY" "$OWNER" "$NAME" | tr '[:upper:]' '[:lower:]')"
           tag="${TAG:-sha-${GITHUB_SHA::7}}"
+          mirror="" region=""
+          if [ "$ECR_MIRROR" = none ]; then ECR_MIRROR=""; fi
+          if [ -n "$ECR_MIRROR" ]; then
+            case "$ECR_MIRROR" in
+              [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].dkr.ecr.*.amazonaws.com/?*) ;;
+              *) echo "::error::ecr-mirror / AGRIPPA_ECR_MIRROR must be <account>.dkr.ecr.<region>.amazonaws.com/<namespace>, got '$ECR_MIRROR'"; exit 1 ;;
+            esac
+            [ -n "$ECR_ROLE_ARN" ] || { echo "::error::an ECR mirror needs ecr-role-arn or the variable AWS_ECR_ROLE_ARN (agrippa-stack deploy/REGISTRIES.md)"; exit 1; }
+            region="${ECR_REGION:-$(echo "$ECR_MIRROR" | cut -d. -f4)}"
+            mirror="$(printf '%s/%s' "${ECR_MIRROR%/}" "$NAME" | tr '[:upper:]' '[:lower:]')"
+          fi
           tags="$image:$tag"
+          [ -z "$mirror" ] || tags="$tags"$'\n'"$mirror:$tag"
           while IFS= read -r extra; do
             extra="$(echo "$extra" | xargs)"
-            if [ -n "$extra" ]; then tags="$tags"$'\n'"$image:$extra"; fi
+            if [ -n "$extra" ]; then
+              tags="$tags"$'\n'"$image:$extra"
+              [ -z "$mirror" ] || tags="$tags"$'\n'"$mirror:$extra"
+            fi
           done <<< "$EXTRA_TAGS"
           {
             echo "image=$image"
+            echo "mirror-image=$mirror"
+            echo "mirror-account=${mirror%%.*}"
+            echo "mirror-region=$region"
+            echo "mirror-role=${mirror:+$ECR_ROLE_ARN}"
             echo "tag=$tag"
             echo "scan-ref=local/$(basename "$image"):scan"
             echo "cache-scope=$(basename "$image")"
@@ -202,6 +254,7 @@ jobs:
             echo 'EOF'
           } >> "$GITHUB_OUTPUT"
           echo "Image: $image"
+          echo "Mirror: ${mirror:-none}"
           echo "Tags:"
           echo "$tags"
 
@@ -218,6 +271,20 @@ jobs:
           registry: ${{ inputs.registry }}
           username: ${{ github.actor }}
           password: ${{ github.token }}
+
+      # The ECR mirror: short-lived credentials from this run's OIDC token.
+      - name: AWS credentials for the ECR mirror (OIDC)
+        if: inputs.push && steps.meta.outputs.mirror-image != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ steps.meta.outputs.mirror-role }}
+          aws-region: ${{ steps.meta.outputs.mirror-region }}
+
+      - name: Log in to the ECR mirror
+        if: inputs.push && steps.meta.outputs.mirror-image != ''
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registries: ${{ steps.meta.outputs.mirror-account }}
 
       # 1. Build linux/amd64 into the local daemon and scan it before anything
       #    is pushed. The arm64 build in step 2 runs the same Dockerfile, so it
@@ -250,7 +317,9 @@ jobs:
           format: table
           exit-code: '1'
 
-      # 2. Multi-arch build and push. The pushed digest is the image index.
+      # 2. Multi-arch build and push. The pushed digest is the image index; one
+      #    build pushes every tag (GHCR and the ECR mirror), so it is the same
+      #    digest in both.
       - name: Build and push (${{ inputs.platforms }})
         id: push
         if: inputs.push
@@ -279,15 +348,19 @@ jobs:
         if: inputs.push
         env:
           REF: ${{ steps.meta.outputs.image }}@${{ steps.push.outputs.digest }}
+          MIRROR_REF: ${{ steps.meta.outputs.mirror-image && format('{0}@{1}', steps.meta.outputs.mirror-image, steps.push.outputs.digest) || '' }}
           IDENTITY: ${{ inputs.verify-identity-regexp }}
         run: |
           set -euo pipefail
-          cosign sign --yes "$REF"
-          cosign verify "$REF" \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            --certificate-identity-regexp "$IDENTITY" \
-            --output text > /dev/null
-          echo "Signed and verified $REF"
+          # Each registry keeps its own signature (Kyverno checks the one it pulls from).
+          for ref in "$REF" ${MIRROR_REF:+"$MIRROR_REF"}; do
+            cosign sign --yes "$ref"
+            cosign verify "$ref" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              --certificate-identity-regexp "$IDENTITY" \
+              --output text > /dev/null
+            echo "Signed and verified $ref"
+          done
 
       # 4. Hand the digest to GitOps (agrippa-stack gitops-bump).
       - name: Dispatch ${{ inputs.dispatch-event }} to ${{ inputs.dispatch-repository }}
@@ -320,6 +393,7 @@ jobs:
           IMAGE: ${{ steps.meta.outputs.image }}
           TAG: ${{ steps.meta.outputs.tag }}
           DIGEST: ${{ steps.push.outputs.digest }}
+          MIRROR: ${{ steps.meta.outputs.mirror-image }}
           PUSHED: ${{ inputs.push }}
         run: |
           {
@@ -332,6 +406,7 @@ jobs:
             if [ "$PUSHED" = "true" ] && [ -n "$DIGEST" ]; then
               echo "| digest | \`$DIGEST\` |"
               echo "| deploy ref | \`$IMAGE@$DIGEST\` |"
+              if [ -n "$MIRROR" ]; then echo "| ECR mirror | \`$MIRROR@$DIGEST\` |"; fi
             else
               echo "| pushed | no (build and scan only) |"
             fi
