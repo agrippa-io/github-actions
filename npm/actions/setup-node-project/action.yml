@@ -39,6 +39,13 @@ inputs:
       to force one.
     required: false
     default: auto
+  legacy-peer-deps:
+    description: >
+      When `true` and the package manager is npm, install with
+      `npm ci --legacy-peer-deps` — for repos whose lockfile only resolves
+      under npm's pre-v7 peer-dependency rules. Ignored for yarn.
+    required: false
+    default: 'false'
 
 outputs:
   package-manager:
@@ -81,6 +88,8 @@ runs:
       run: |
         if [ "${{ steps.detect.outputs.package-manager }}" = "yarn" ]; then
           yarn install --frozen-lockfile
+        elif [ "${{ inputs.legacy-peer-deps }}" = "true" ]; then
+          npm ci --legacy-peer-deps
         else
           npm ci
         fi

@@ -31,6 +31,11 @@ on:
         required: false
         type: string
         default: auto
+      legacy-peer-deps:
+        description: 'Install with `npm ci --legacy-peer-deps` (npm only).'
+        required: false
+        type: boolean
+        default: false
     secrets:
       npm-token:
         description: NPM auth token used during install (needed even for format-only because peer deps may be private).
@@ -51,6 +56,7 @@ jobs:
           registry-url: ${{ inputs.registry-url }}
           npm-token: ${{ secrets.npm-token }}
           package-manager: ${{ inputs.package-manager }}
+          legacy-peer-deps: ${{ inputs.legacy-peer-deps }}
 
       - name: prettier --check
         shell: bash

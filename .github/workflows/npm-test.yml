@@ -37,6 +37,11 @@ on:
         required: false
         type: string
         default: auto
+      legacy-peer-deps:
+        description: 'Install with `npm ci --legacy-peer-deps` (npm only).'
+        required: false
+        type: boolean
+        default: false
       with-postgres:
         description: 'Start a throwaway Postgres container before the tests for DB-backed suites that do NOT self-manage one (Testcontainers users leave this false). Exposes DATABASE_URL=postgres://ci:ci@localhost:5432/ci.'
         required: false
@@ -67,6 +72,7 @@ jobs:
           registry-url: ${{ inputs.registry-url }}
           npm-token: ${{ secrets.npm-token }}
           package-manager: ${{ inputs.package-manager }}
+          legacy-peer-deps: ${{ inputs.legacy-peer-deps }}
 
       - if: ${{ inputs.with-playwright }}
         uses: agrippa-io/github-actions/npm/actions/playwright-cached-chromium@v1
