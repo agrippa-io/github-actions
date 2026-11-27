@@ -1,0 +1,68 @@
+name: cost-inventory
+
+# Reusable workflow (cost-planner-0 2.4, D2): after a repo's CI passes on a
+# push, tell the Cost Planner to sync its inventory, so a changed deploy.yaml
+# (or registry.json, environments/*.yaml, chart values) reaches the
+# architecture model within one sync. The planner also syncs nightly; this
+# makes it follow pushes.
+#
+# Every repo calls it the same way, after its `ci-ok` gate:
+#
+#   cost-inventory:
+#     needs: ci-ok
+#     if: github.event_name == 'push'
+#     uses: agrippa-io/github-actions/.github/workflows/cost-inventory.yml@v1.14.0
+#     secrets:
+#       cost-planner-token: ${{ secrets.COST_PLANNER_TRIGGER_TOKEN }}
+#
+# Where it calls comes from the organization / repo variable
+# vars.COST_PLANNER_URL (e.g. https://api.<env>/cost-planner/v1). Opt-in and
+# safe: with no URL or no token it prints a notice and succeeds, and a
+# refused or unreachable planner is a warning, never a red build, unless
+# `strict: true`.
+
+on:
+  workflow_call:
+    inputs:
+      planner-url:
+        description: 'Cost Planner base URL; default vars.COST_PLANNER_URL.'
+        required: false
+        type: string
+        default: ''
+      strict:
+        description: 'Fail when the planner refuses or cannot be reached (default false, a warning).'
+        required: false
+        type: boolean
+        default: false
+      dry-run:
+        description: 'Print the request and send nothing.'
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      cost-planner-token:
+        description: 'The planner INVENTORY_SYNC_TRIGGER_TOKEN.'
+        required: false
+    outputs:
+      outcome:
+        description: 'accepted, skipped, dry-run or failed.'
+        value: ${{ jobs.trigger.outputs.outcome }}
+
+permissions:
+  contents: read
+
+jobs:
+  trigger:
+    name: Trigger inventory sync
+    runs-on: ${{ vars.RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    outputs:
+      outcome: ${{ steps.trigger.outputs.outcome }}
+    steps:
+      - id: trigger
+        uses: agrippa-io/github-actions/cost/actions/cost-inventory@v1.14.0
+        with:
+          planner-url: ${{ inputs.planner-url || vars.COST_PLANNER_URL }}
+          token: ${{ secrets.cost-planner-token }}
+          strict: ${{ inputs.strict }}
+          dry-run: ${{ inputs.dry-run }}

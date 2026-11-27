@@ -17,6 +17,7 @@ github-actions/
 │   └── README.md     # Action-by-action reference + usage examples
 ├── aws/              # (Reserved) AWS/ECR/IAM-related actions and jobs
 ├── docs/             # Docs platform actions (publish-docs, sdk-contract-stack, sdk-release-plan)
+├── cost/             # Cost Planner actions (cost-inventory) — see cost/README.md
 ├── security/         # Secret scanning (gitleaks) — see security/README.md
 ├── images/           # Container image workflow docs (image-build.yml)
 ├── test/fixtures/    # Fixtures for the self-test workflows
@@ -67,7 +68,8 @@ so regressions are caught before a tag is cut.
 
 See [`npm/README.md`](./npm/README.md) for the action reference,
 [`aws/README.md`](./aws/README.md) for the Docker/ECR workflows,
-[`images/README.md`](./images/README.md) for `image-build.yml` (multi-arch
+[`cost/README.md`](./cost/README.md) for `cost-inventory.yml` (sync the
+Cost Planner's inventory on push, opt-in), [`images/README.md`](./images/README.md) for `image-build.yml` (multi-arch
 build, Trivy, cosign, push by digest, GitOps dispatch), and
 [`MIGRATION.md`](./MIGRATION.md) for the per-consumer playbook (how to
 wire ci.yml + release.yml in a new repo by archetype: npm package /

@@ -1,0 +1,63 @@
+name: Cost inventory
+description: >
+  Tell the Cost Planner (node-service-cost-planner, cost-planner-0 2.4) that a
+  repo changed, so it syncs its inventory: POST <planner-url>/webhooks/inventory-sync
+  with a bearer trigger token. Opt-in and safe for every repo's CI: with no
+  planner-url or no token it only prints a notice, and an unreachable or failing
+  planner is a warning, never a red build (unless strict is true).
+
+inputs:
+  planner-url:
+    description: 'Cost Planner base URL, e.g. https://api.example.com/cost-planner/v1. Empty skips the step.'
+    required: false
+    default: ''
+  token:
+    description: 'The shared INVENTORY_SYNC_TRIGGER_TOKEN the planner expects. Empty skips the step.'
+    required: false
+    default: ''
+  repo:
+    description: 'owner/name of the repo that changed. Default GITHUB_REPOSITORY.'
+    required: false
+    default: ''
+  ref:
+    description: 'Branch that changed. Default GITHUB_REF_NAME.'
+    required: false
+    default: ''
+  sha:
+    description: 'Commit that changed. Default GITHUB_SHA.'
+    required: false
+    default: ''
+  strict:
+    description: 'true fails the step when the planner refuses or cannot be reached (default false, a warning).'
+    required: false
+    default: 'false'
+  dry-run:
+    description: 'true prints the request and sends nothing.'
+    required: false
+    default: 'false'
+
+outputs:
+  outcome:
+    description: 'accepted, skipped, dry-run or failed.'
+    value: ${{ steps.trigger.outputs.outcome }}
+  joined:
+    description: 'true when the planner was already syncing and this push joined that sync.'
+    value: ${{ steps.trigger.outputs.joined }}
+  status:
+    description: 'HTTP status of the call (empty when nothing was sent).'
+    value: ${{ steps.trigger.outputs.status }}
+
+runs:
+  using: composite
+  steps:
+    - id: trigger
+      shell: bash
+      env:
+        COST_PLANNER_URL: ${{ inputs.planner-url }}
+        COST_PLANNER_TOKEN: ${{ inputs.token }}
+        COST_REPO: ${{ inputs.repo }}
+        COST_REF: ${{ inputs.ref }}
+        COST_SHA: ${{ inputs.sha }}
+        COST_STRICT: ${{ inputs.strict }}
+        COST_DRY_RUN: ${{ inputs.dry-run }}
+      run: '"$GITHUB_ACTION_PATH/trigger.sh"'
