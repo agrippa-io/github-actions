@@ -46,6 +46,30 @@ What one run does:
 
 With `push: false` (pull requests) only step 1 runs.
 
+### ECR mirror (off until AWS is set up)
+
+agrippa-stack's container registry router (`deploy/registries.yaml`, DC-4 step
+4.4.1) can pull an environment from AWS ECR instead of GHCR. For that, every
+image must also be in ECR with the **same digest** and its own signature, so
+the workflow can mirror: when `ecr-mirror` or the org variable
+`AGRIPPA_ECR_MIRROR` holds an ECR prefix
+(`<account>.dkr.ecr.<region>.amazonaws.com/<namespace>`), the job
+
+1. assumes the role in `ecr-role-arn` / the variable `AWS_ECR_ROLE_ARN` with
+   this run's GitHub OIDC token (`aws-actions/configure-aws-credentials`; the
+   job already has `id-token: write`), so there are no AWS keys, and logs in to
+   ECR (`aws-actions/amazon-ecr-login`);
+2. pushes `<prefix>/<image-name>` with the same tags **in the same build** as
+   GHCR, so the image index (and its digest) is byte-identical in both;
+3. cosign-signs and verifies the ECR ref too (signatures live per registry;
+   Kyverno checks the one in the registry it pulls from).
+
+With neither set, nothing changes (no AWS step runs). `ecr-mirror: none` turns
+the mirror off for one caller (the selftest). The ECR repository
+`<namespace>/<image-name>` must exist first: ECR does not create repositories
+on push. The one-time AWS setup (OIDC provider, role, policies, repositories)
+is in agrippa-stack `deploy/REGISTRIES.md`.
+
 Deploys pin `outputs.ref` (`<image>@sha256:…`); tags are for people reading
 the registry, and the workflow never pushes `latest` unless a caller asks
 for it in `extra-tags`.
@@ -72,6 +96,9 @@ for it in `extra-tags`.
 | `workload` | — | agrippa-stack `registry.json` workload name; empty skips the dispatch |
 | `dispatch-repository` | `agrippa-io/agrippa-stack` | Dispatch target |
 | `dispatch-event` | `image-built` | Dispatch event type |
+| `ecr-mirror` | `vars.AGRIPPA_ECR_MIRROR`, else none | ECR prefix to mirror to; `none` = off |
+| `ecr-region` | `vars.AGRIPPA_ECR_REGION`, else from `ecr-mirror` | AWS region of the mirror |
+| `ecr-role-arn` | `vars.AWS_ECR_ROLE_ARN` | IAM role assumed with GitHub OIDC to push (an ARN, not a secret) |
 
 | Secret | Description |
 | ------ | ----------- |
@@ -84,6 +111,7 @@ for it in `extra-tags`.
 | `tag` | Tag pushed |
 | `digest` | `sha256:…` of the image index (empty without push) |
 | `ref` | `<image>@<digest>` (empty without push) |
+| `mirror-ref` | `<ecr-prefix>/<name>@<digest>` (empty without a mirror or push) |
 
 ### Caller
 
